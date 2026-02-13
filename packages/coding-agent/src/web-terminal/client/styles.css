@@ -9,17 +9,52 @@
 html,
 body {
 	height: 100%;
+	min-height: 100dvh;
+	width: 100%;
 	margin: 0;
 	padding: 0;
 	background: #0b0b0e;
-	font-family: "SF Mono", "Fira Code", "Consolas", "Liberation Mono", monospace;
+	font-family: "Cascadia Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
+}
+
+body {
+	display: flex;
+	flex-direction: column;
 }
 
 #terminal {
+	position: fixed;
+	inset: 0;
+	width: 100vw;
+	height: 100dvh;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+#terminal,
+#terminal .xterm,
+#terminal .xterm-viewport,
+#terminal .xterm-screen {
 	height: 100%;
 	width: 100%;
-	padding: 12px;
 }
+
+#terminal .xterm {
+	flex: 1;
+	min-height: 0;
+}
+
+#terminal .xterm-viewport,
+#terminal .xterm-scrollable-element {
+	height: 100% !important;
+}
+
+#terminal .xterm-rows {
+	width: 100% !important;
+}
+
+
 
 .xterm {
 	font-size: 14px;

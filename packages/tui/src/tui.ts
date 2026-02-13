@@ -424,6 +424,16 @@ export class TUI extends Container {
 		});
 	}
 
+	requestFullRender(clear = false): void {
+		this.#previousLines = [];
+		this.#previousWidth = clear ? -1 : 0;
+		this.#cursorRow = 0;
+		this.#hardwareCursorRow = 0;
+		this.#maxLinesRendered = 0;
+		this.#previousViewportTop = 0;
+		this.requestRender();
+	}
+
 	#handleInput(data: string): void {
 		// If we're waiting for cell size response, buffer input and parse
 		if (this.#cellSizeQueryPending) {

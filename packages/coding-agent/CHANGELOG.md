@@ -4,6 +4,10 @@
 
 ### Added
 - Added local web terminal server with xterm.js client, CLI flag, and /web_terminal slash command with QR code display
+
+### Changed
+- Web terminal now mirrors the interactive session terminal in-browser instead of spawning a separate PTY, forwarding input/output through a shared bridge
+- Web client measures cells and resizes xterm based on the viewport to keep dimensions accurate and aligned with the host terminal size
 ## [12.1.0] - 2026-02-13
 
 ### Added

@@ -6,15 +6,7 @@ import * as path from "node:path";
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, UsageReport } from "@oh-my-pi/pi-ai";
 import type { Component, Loader, SlashCommand } from "@oh-my-pi/pi-tui";
-import {
-	CombinedAutocompleteProvider,
-	Container,
-	Markdown,
-	ProcessTerminal,
-	Spacer,
-	Text,
-	TUI,
-} from "@oh-my-pi/pi-tui";
+import { CombinedAutocompleteProvider, Container, Markdown, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
 import { $env, isEnoent, logger, postmortem } from "@oh-my-pi/pi-utils";
 import { APP_NAME } from "@oh-my-pi/pi-utils/dirs";
 import chalk from "chalk";
@@ -32,6 +24,7 @@ import type { SessionContext, SessionManager } from "../session/session-manager"
 import { getRecentSessions } from "../session/session-manager";
 import type { ExitPlanModeDetails } from "../tools";
 import { setTerminalTitle } from "../utils/title-generator";
+import { createWebTerminalBridge, MirroredTerminal, setActiveWebTerminalBridge } from "../web-terminal/terminal-bridge";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { CustomEditor } from "./components/custom-editor";
@@ -174,7 +167,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
 
-		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
+		const terminal = new MirroredTerminal();
+		this.ui = new TUI(terminal, settings.get("showHardwareCursor"));
+		setActiveWebTerminalBridge(createWebTerminalBridge(this.ui, terminal));
 		this.ui.setClearOnShrink(settings.get("clearOnShrink"));
 		setMermaidRenderCallback(() => this.ui.requestRender());
 		this.chatContainer = new Container();
@@ -717,6 +712,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#cleanupUnsubscribe();
 		}
 		if (this.isInitialized) {
+			if (this.ui.terminal instanceof MirroredTerminal) {
+				setActiveWebTerminalBridge(null);
+			}
 			this.ui.stop();
 			this.isInitialized = false;
 		}

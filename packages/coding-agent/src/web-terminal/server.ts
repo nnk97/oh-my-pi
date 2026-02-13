@@ -1,11 +1,10 @@
 import * as path from "node:path";
 import * as url from "node:url";
-import { PtySession } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Server, ServerWebSocket } from "bun";
-import { settings } from "../config/settings";
 import type { ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
 import { parseClientMessage, serializeServerMessage } from "./protocol";
+import { getActiveWebTerminalBridge, type WebTerminalBridge } from "./terminal-bridge";
 
 export interface WebTerminalServerOptions {
 	host?: string;
@@ -27,7 +26,8 @@ export class WebTerminalServer {
 	#server: Server<WebTerminalSocketData>;
 	#assets: Map<string, WebTerminalAsset>;
 	#activeSocket: ServerWebSocket<WebTerminalSocketData> | null = null;
-	#activeSession: PtySession | null = null;
+	#activeBridge: WebTerminalBridge | null = null;
+	#activeBridgeUnsubscribe: (() => void) | null = null;
 	#activeSessionId = 0;
 	#cwd: string;
 	readonly url: string;
@@ -70,7 +70,9 @@ export class WebTerminalServer {
 	stop(): void {
 		this.#server.stop();
 		this.#activeSocket = null;
-		this.#activeSession = null;
+		this.#activeBridgeUnsubscribe?.();
+		this.#activeBridgeUnsubscribe = null;
+		this.#activeBridge = null;
 		logger.debug("Web terminal server stopped", { url: this.url });
 	}
 
@@ -134,62 +136,27 @@ export class WebTerminalServer {
 			ws.close();
 			return;
 		}
+		const bridge = getActiveWebTerminalBridge();
+		if (!bridge) {
+			this.#sendStatus(ws, "error", "No active terminal session to mirror.");
+			ws.close();
+			return;
+		}
 		this.#attachSocket(ws);
 		const sessionId = ++this.#activeSessionId;
 		ws.data.sessionId = sessionId;
-		const session = new PtySession();
-		this.#activeSession = session;
-		this.#sendStatus(ws, "starting", "Starting shell...");
-		const { shell, env, command } = buildShellCommand();
-		logger.debug("Web terminal PTY start", { cwd: this.#cwd, shell, command });
-
-		let runningSent = false;
-		try {
-			void session
-				.start(
-					{
-						command,
-						cwd: this.#cwd,
-						env,
-						shell,
-					},
-					(arg1?: unknown, arg2?: unknown) => {
-						if (ws.data.sessionId !== sessionId) return;
-						const chunk = typeof arg1 === "string" ? arg1 : typeof arg2 === "string" ? arg2 : "";
-						if (!runningSent) {
-							runningSent = true;
-							this.#sendStatus(ws, "running", "Shell connected.");
-						}
-						if (chunk) {
-							logger.debug("Web terminal output", { length: chunk.length });
-							this.#send(ws, { type: "output", data: chunk });
-						}
-					},
-				)
-				.then(result => {
-					if (ws.data.sessionId !== sessionId) return;
-					const message = result.exitCode === undefined ? "Shell exited." : `Shell exited (${result.exitCode}).`;
-					this.#sendStatus(ws, "exited", message);
-					logger.debug("Web terminal PTY exited", { exitCode: result.exitCode, cancelled: result.cancelled });
-					ws.close();
-				})
-				.catch(error => {
-					if (ws.data.sessionId !== sessionId) return;
-					const message = error instanceof Error ? error.message : String(error);
-					this.#sendStatus(ws, "error", message);
-					logger.error("Web terminal PTY error", { error: message });
-					ws.close();
-				});
-			if (!runningSent) {
-				runningSent = true;
-				this.#sendStatus(ws, "running", "Shell connected.");
-			}
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			this.#sendStatus(ws, "error", message);
-			logger.error("Web terminal PTY start failed", { error: message });
-			ws.close();
-		}
+		this.#activeBridge = bridge;
+		this.#activeBridgeUnsubscribe?.();
+		this.#activeBridgeUnsubscribe = bridge.onOutput(data => {
+			if (ws.data.sessionId !== sessionId) return;
+			this.#send(ws, { type: "output", data });
+		});
+		this.#sendStatus(ws, "running", "Connected to host terminal.");
+		bridge.requestFullRender();
+		logger.debug("Web terminal attached", {
+			cwd: this.#cwd,
+			size: bridge.getSize(),
+		});
 	}
 
 	#handleMessage(ws: ServerWebSocket<WebTerminalSocketData>, message: ClientMessage | null): void {
@@ -198,13 +165,13 @@ export class WebTerminalServer {
 			logger.warn("Web terminal received malformed message");
 			return;
 		}
-		if (!this.#activeSession || ws.data.sessionId !== this.#activeSessionId) {
+		if (!this.#activeBridge || ws.data.sessionId !== this.#activeSessionId) {
 			return;
 		}
 		if (message.type === "input") {
 			logger.debug("Web terminal input", { length: message.data.length });
 			try {
-				this.#activeSession.write(message.data);
+				this.#activeBridge.injectInput(message.data);
 			} catch (error) {
 				this.#sendStatus(ws, "error", error instanceof Error ? error.message : String(error));
 			}
@@ -213,7 +180,11 @@ export class WebTerminalServer {
 		if (message.type === "resize") {
 			logger.debug("Web terminal resize", { cols: message.cols, rows: message.rows });
 			try {
-				this.#activeSession.resize(message.cols, message.rows);
+				const cols = Math.max(1, Math.floor(message.cols));
+				const rows = Math.max(1, Math.floor(message.rows));
+				this.#activeBridge.setSize(cols, rows);
+				this.#activeBridge.requestFullRender();
+				logger.debug("Web terminal size applied", { cols, rows });
 			} catch (error) {
 				this.#sendStatus(ws, "error", error instanceof Error ? error.message : String(error));
 			}
@@ -226,14 +197,12 @@ export class WebTerminalServer {
 		}
 		ws.data.sessionId = null;
 		logger.debug("Web terminal client disconnected");
-		if (this.#activeSession) {
-			try {
-				this.#activeSession.kill();
-			} catch {
-				// Ignore cleanup errors
-			}
-		}
-		this.#activeSession = null;
+		this.#activeBridgeUnsubscribe?.();
+		this.#activeBridgeUnsubscribe = null;
+		this.#activeBridge?.clearSize();
+		this.#activeBridge?.requestFullRender();
+		logger.debug("Web terminal size cleared", { size: this.#activeBridge?.getSize() });
+		this.#activeBridge = null;
 	}
 
 	#send(ws: ServerWebSocket<WebTerminalSocketData>, message: ServerMessage): void {
@@ -259,31 +228,6 @@ export async function getOrStartWebTerminalServer(options: WebTerminalServerOpti
 
 export function getWebTerminalServer(): WebTerminalServer | null {
 	return cachedServer;
-}
-
-function buildShellCommand(): { shell?: string; env: Record<string, string>; command: string } {
-	const config = settings.getShellConfig();
-	const shell = config.shell;
-	const shellLower = shell.toLowerCase();
-	const isLoginShell = /bash|zsh/i.test(shell);
-	let command: string;
-	if (shellLower.includes("powershell") || shellLower.includes("pwsh")) {
-		command = "& $env:SHELL -NoExit";
-	} else if (shellLower.includes("cmd")) {
-		command = "%SHELL% /k";
-	} else {
-		command = isLoginShell ? 'exec "$SHELL" -l -i' : 'exec "$SHELL" -i';
-	}
-	return {
-		shell,
-		env: {
-			...config.env,
-			SHELL: shell,
-			TERM: "xterm-256color",
-			COLORTERM: "truecolor",
-		},
-		command,
-	};
 }
 
 async function buildAssets(): Promise<Map<string, WebTerminalAsset>> {

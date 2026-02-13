@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### Added
+- Added requestFullRender() to force a full repaint when external consumers override terminal dimensions
 ## [11.10.0] - 2026-02-10
 ### Added
 
