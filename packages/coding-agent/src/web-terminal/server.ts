@@ -12,7 +12,7 @@ export interface WebTerminalServerOptions {
 	cwd?: string;
 }
 
-type WebTerminalSocketData = { sessionId: number | null };
+type WebTerminalSocketData = { sessionId: number | null; capabilities?: ClientCapabilities };
 
 type WebTerminalAsset = {
 	content: string;
@@ -146,6 +146,14 @@ export class WebTerminalServer {
 			ws.close(1008, "Only one client allowed");
 			return;
 		}
+		ws.data.capabilities = {
+			fontFamilyConfigured: "",
+			fontFamilyResolved: "",
+			fontSize: 0,
+			fontMatch: "unknown",
+			supportsNerdSymbols: false,
+			supportsTokenEmoji: false,
+		};
 		logger.debug("Web terminal client connected");
 		void this.#startSession(ws);
 	}
@@ -165,14 +173,19 @@ export class WebTerminalServer {
 		this.#attachSocket(ws);
 		const sessionId = ++this.#activeSessionId;
 		ws.data.sessionId = sessionId;
-		this.#activeClientCapabilities = null;
+		const pendingCapabilities = ws.data.capabilities;
+		this.#activeClientCapabilities = pendingCapabilities ?? null;
 		this.#activeBridge = bridge;
 		this.#activeBridgeUnsubscribe?.();
 		this.#activeBridgeUnsubscribe = bridge.onOutput(data => {
 			if (ws.data.sessionId !== sessionId) return;
-			this.#send(ws, { type: "output", data });
+			const filtered = this.#filterOutput(data, this.#activeClientCapabilities ?? ws.data.capabilities ?? null);
+			this.#send(ws, { type: "output", data: filtered });
 		});
 		this.#sendStatus(ws, "running", "Connected to host terminal.");
+		if (pendingCapabilities) {
+			bridge.setClientCapabilities(pendingCapabilities);
+		}
 		bridge.requestFullRender({ clear: true });
 		logger.debug("Web terminal attached", {
 			cwd: this.#cwd,
@@ -184,6 +197,26 @@ export class WebTerminalServer {
 		if (!message) {
 			this.#sendStatus(ws, "error", "Malformed message received.");
 			logger.warn("Web terminal received malformed message");
+			return;
+		}
+		if (message.type === "client_capabilities") {
+			ws.data.capabilities = message;
+			if (!this.#activeBridge || ws.data.sessionId !== this.#activeSessionId) {
+				return;
+			}
+			if (isSameCapabilities(this.#activeClientCapabilities, message)) {
+				return;
+			}
+			this.#activeClientCapabilities = message;
+			logger.debug("Web terminal client capabilities", {
+				fontFamilyConfigured: message.fontFamilyConfigured,
+				fontFamilyResolved: message.fontFamilyResolved,
+				fontSize: message.fontSize,
+				fontMatch: message.fontMatch,
+				supportsNerdSymbols: message.supportsNerdSymbols,
+				supportsTokenEmoji: message.supportsTokenEmoji,
+			});
+			this.#activeBridge.setClientCapabilities(message);
 			return;
 		}
 		if (!this.#activeBridge || ws.data.sessionId !== this.#activeSessionId) {
@@ -212,19 +245,6 @@ export class WebTerminalServer {
 			return;
 		}
 		if (message.type === "client_capabilities") {
-			if (isSameCapabilities(this.#activeClientCapabilities, message)) {
-				return;
-			}
-			this.#activeClientCapabilities = message;
-			logger.debug("Web terminal client capabilities", {
-				fontFamilyConfigured: message.fontFamilyConfigured,
-				fontFamilyResolved: message.fontFamilyResolved,
-				fontSize: message.fontSize,
-				fontMatch: message.fontMatch,
-				supportsNerdSymbols: message.supportsNerdSymbols,
-				supportsTokenEmoji: message.supportsTokenEmoji,
-			});
-			this.#activeBridge.setClientCapabilities(message);
 			return;
 		}
 	}
@@ -234,6 +254,7 @@ export class WebTerminalServer {
 			this.#activeSocket = null;
 		}
 		ws.data.sessionId = null;
+		ws.data.capabilities = undefined;
 		logger.debug("Web terminal client disconnected");
 		this.#activeBridgeUnsubscribe?.();
 		this.#activeBridgeUnsubscribe = null;
@@ -243,6 +264,11 @@ export class WebTerminalServer {
 		this.#activeClientCapabilities = null;
 		logger.debug("Web terminal size cleared", { size: this.#activeBridge?.getSize() });
 		this.#activeBridge = null;
+	}
+
+	#filterOutput(data: string, capabilities: ClientCapabilities | null): string {
+		if (capabilities?.supportsTokenEmoji === true) return data;
+		return data.replaceAll("🪙", "¤");
 	}
 
 	#send(ws: ServerWebSocket<WebTerminalSocketData>, message: ServerMessage): void {

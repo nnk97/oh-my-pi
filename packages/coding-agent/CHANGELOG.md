@@ -18,6 +18,8 @@
 ### Fixed
 - Stabilized the web terminal viewport by clamping to the visual viewport and using xterm char metrics for cell sizing
 - Avoided resetting symbol presets when font matching is unknown while keeping token fallback handling
+- Filtered the web terminal token icon to ¤ when browsers report narrow emoji widths to avoid misalignment
+- Guarded web terminal sizing when cell metrics cannot be measured to prevent null dimensions
 ## [12.1.0] - 2026-02-13
 
 ### Added

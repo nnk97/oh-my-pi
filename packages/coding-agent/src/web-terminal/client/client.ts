@@ -130,24 +130,44 @@ function detectNerdSymbols(fontFamily: string, match: ClientCapabilities["fontMa
 	return Math.abs(withFont - fallback) > 0.1;
 }
 
+function measureEmojiWidth(): number | null {
+	const probe = document.createElement("span");
+	probe.textContent = TOKEN_GLYPH;
+	probe.style.position = "fixed";
+	probe.style.top = "-10000px";
+	probe.style.left = "-10000px";
+	probe.style.visibility = "hidden";
+	probe.style.whiteSpace = "pre";
+	probe.style.fontFamily = FONT_FAMILY;
+	probe.style.fontSize = `${FONT_SIZE}px`;
+	probe.style.lineHeight = "1";
+	probe.style.contain = "layout paint size";
+	document.body.appendChild(probe);
+	const rect = probe.getBoundingClientRect();
+	probe.remove();
+	return rect.width > 0 ? rect.width : null;
+}
+
 function detectTokenEmoji(cellWidth: number): boolean {
 	if (cellWidth <= 0) return false;
-	const width = measureGlyphWidth(FONT_FAMILY, TOKEN_GLYPH);
+	const width = measureEmojiWidth();
 	if (width === null) return false;
-	return width >= cellWidth * 1.6;
+	return width <= cellWidth * 1.2;
 }
 
 function collectCapabilities(): ClientCapabilities {
 	const families = parseFontFamilies(FONT_FAMILY);
 	const resolved = resolveFontFamily(families);
+	const fallbackCellWidth = Math.max(6, Math.min(14, FONT_SIZE * 0.62));
 	const cell = measureCell();
+	const cellWidth = cell?.width ?? fallbackCellWidth;
 	return {
 		fontFamilyConfigured: FONT_FAMILY,
 		fontFamilyResolved: resolved.resolved,
 		fontSize: FONT_SIZE,
 		fontMatch: resolved.match,
 		supportsNerdSymbols: detectNerdSymbols(FONT_FAMILY, resolved.match),
-		supportsTokenEmoji: detectTokenEmoji(cell.width),
+		supportsTokenEmoji: detectTokenEmoji(cellWidth),
 	};
 }
 
@@ -162,7 +182,7 @@ function sendCapabilities(): void {
 	sendMessage(payload);
 }
 
-function measureCell(): { width: number; height: number } {
+function measureCell(): { width: number; height: number } | null {
 	const xtermMeasure = terminalRoot.querySelector(".xterm-char-measure-element") as HTMLElement | null;
 	if (xtermMeasure) {
 		const rect = xtermMeasure.getBoundingClientRect();
@@ -174,25 +194,7 @@ function measureCell(): { width: number; height: number } {
 			height: Math.max(1, lineHeight),
 		};
 	}
-
-	const probe = document.createElement("span");
-	probe.textContent = "MMMMMMMMMM";
-	probe.style.position = "absolute";
-	probe.style.visibility = "hidden";
-	probe.style.whiteSpace = "pre";
-	probe.style.fontFamily = FONT_FAMILY;
-	probe.style.fontSize = `${FONT_SIZE}px`;
-	probe.style.lineHeight = "1";
-	terminalRoot.appendChild(probe);
-	const rect = probe.getBoundingClientRect();
-	probe.remove();
-
-	const charWidth = rect.width > 0 ? rect.width / 10 : 8;
-	const lineHeight = rect.height > 0 ? rect.height : 17;
-	return {
-		width: Math.max(4, Math.min(20, charWidth)),
-		height: Math.max(1, lineHeight),
-	};
+	return null;
 }
 
 function computeDimensions(): { cols: number; rows: number } | null {
@@ -200,6 +202,7 @@ function computeDimensions(): { cols: number; rows: number } | null {
 	const rect = terminalRoot.getBoundingClientRect();
 	if (rect.width <= 0 || rect.height <= 0) return null;
 	const cell = measureCell();
+	if (!cell) return null;
 	let cols = Math.max(2, Math.floor(rect.width / cell.width) - RIGHT_MARGIN_COLS);
 	if (cols < 20 && rect.width > 500) {
 		const fallbackCellWidth = Math.max(6, Math.min(14, FONT_SIZE * 0.62));
