@@ -1,3 +1,4 @@
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
 
 const terminalRoot = (() => {
@@ -13,25 +14,36 @@ type WebTerminalRuntimeConfig = {
 	fontSize?: number;
 };
 
+type ClientCapabilities = {
+	fontFamilyConfigured: string;
+	fontFamilyResolved: string;
+	fontSize: number;
+	fontMatch: "exact" | "fallback" | "unknown";
+	supportsNerdSymbols: boolean;
+};
+
 const runtimeConfig = (window as typeof window & { __OMP_WEB_TERMINAL_CONFIG?: WebTerminalRuntimeConfig })
 	.__OMP_WEB_TERMINAL_CONFIG;
 
 const FONT_FAMILY =
 	runtimeConfig?.fontFamily?.trim() ||
-	'"Fira Code", "FiraCode Nerd Font", "Cascadia Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace';
+	'"JetBrains Mono", "Cascadia Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", "Noto Sans Mono", monospace';
 
 const configuredFontSize = runtimeConfig?.fontSize;
 const FONT_SIZE =
 	typeof configuredFontSize === "number" && Number.isFinite(configuredFontSize)
 		? Math.max(8, Math.min(24, Math.round(configuredFontSize)))
 		: 12;
-const RIGHT_MARGIN_COLS = 1;
+const RIGHT_MARGIN_COLS = 0;
+const NERD_GLYPH = "";
+const TOKEN_GLYPH = "🪙";
 
 let term: Terminal | null = null;
 let ws: WebSocket | null = null;
 let resizeTimer: number | null = null;
 let lastSentCols = 0;
 let lastSentRows = 0;
+let lastCapabilitiesPayload: string | null = null;
 
 function collectSizing(): Record<string, unknown> {
 	const xterm = terminalRoot.querySelector(".xterm");
@@ -48,6 +60,85 @@ function collectSizing(): Record<string, unknown> {
 function sendMessage(payload: object): void {
 	if (ws?.readyState !== WebSocket.OPEN) return;
 	ws.send(JSON.stringify(payload));
+}
+
+function parseFontFamilies(fontFamily: string): string[] {
+	return fontFamily
+		.split(",")
+		.map(entry => entry.trim())
+		.filter(Boolean)
+		.map(entry => entry.replace(/^['"]|['"]$/g, ""));
+}
+
+function quoteFontFamily(family: string): string {
+	if (family.startsWith("'") || family.startsWith('"')) return family;
+	if (/[^a-zA-Z0-9_-]/.test(family)) return `"${family}"`;
+	return family;
+}
+
+function resolveFontFamily(families: string[]): { resolved: string; match: ClientCapabilities["fontMatch"] } {
+	if (!document.fonts?.check || families.length === 0) {
+		return { resolved: "unknown", match: "unknown" };
+	}
+	const firstFamily = families[0];
+	if (firstFamily && document.fonts.check(`${FONT_SIZE}px ${quoteFontFamily(firstFamily)}`)) {
+		return { resolved: firstFamily, match: "exact" };
+	}
+	for (let i = 1; i < families.length; i += 1) {
+		const family = families[i];
+		if (family && document.fonts.check(`${FONT_SIZE}px ${quoteFontFamily(family)}`)) {
+			return { resolved: family, match: "fallback" };
+		}
+	}
+	return { resolved: "unknown", match: "unknown" };
+}
+
+function measureGlyphWidth(fontFamily: string, glyph: string): number | null {
+	const canvas = document.createElement("canvas");
+	const context = canvas.getContext("2d");
+	if (!context) return null;
+	context.font = `${FONT_SIZE}px ${fontFamily}`;
+	return context.measureText(glyph).width;
+}
+
+function detectNerdSymbols(fontFamily: string, match: ClientCapabilities["fontMatch"]): boolean {
+	if (match === "unknown") return false;
+	const withFont = measureGlyphWidth(fontFamily, NERD_GLYPH);
+	const fallback = measureGlyphWidth("monospace", NERD_GLYPH);
+	if (withFont === null || fallback === null) return false;
+	return Math.abs(withFont - fallback) > 0.1;
+}
+
+function detectTokenEmoji(cellWidth: number): boolean {
+	if (cellWidth <= 0) return false;
+	const width = measureGlyphWidth(FONT_FAMILY, TOKEN_GLYPH);
+	if (width === null) return false;
+	return width >= cellWidth * 1.6;
+}
+
+function collectCapabilities(): ClientCapabilities {
+	const families = parseFontFamilies(FONT_FAMILY);
+	const resolved = resolveFontFamily(families);
+	const cell = measureCell();
+	return {
+		fontFamilyConfigured: FONT_FAMILY,
+		fontFamilyResolved: resolved.resolved,
+		fontSize: FONT_SIZE,
+		fontMatch: resolved.match,
+		supportsNerdSymbols: detectNerdSymbols(FONT_FAMILY, resolved.match),
+		supportsTokenEmoji: detectTokenEmoji(cell.width),
+	};
+}
+
+function sendCapabilities(): void {
+	const payload = {
+		type: "client_capabilities",
+		...collectCapabilities(),
+	};
+	const serialized = JSON.stringify(payload);
+	if (serialized === lastCapabilitiesPayload) return;
+	lastCapabilitiesPayload = serialized;
+	sendMessage(payload);
 }
 
 function measureCell(): { width: number; height: number } {
@@ -123,6 +214,7 @@ function attachResizeHooks(): void {
 	});
 	document.fonts?.ready.then(() => {
 		scheduleResize("fonts-ready");
+		sendCapabilities();
 	});
 }
 
@@ -133,6 +225,7 @@ function startWebSocket(): void {
 	ws.addEventListener("open", () => {
 		console.log("[web-terminal] websocket open", wsUrl.toString());
 		requestAnimationFrame(() => sendResize());
+		sendCapabilities();
 	});
 	ws.addEventListener("message", event => {
 		let payload: unknown;
@@ -169,8 +262,12 @@ function initTerminal(): void {
 		fontSize: FONT_SIZE,
 		lineHeight: 1,
 		letterSpacing: 0,
+		allowProposedApi: true,
 		scrollback: 5000,
 	});
+	const unicode11Addon = new Unicode11Addon();
+	term.loadAddon(unicode11Addon);
+	term.unicode.activeVersion = "11";
 	term.open(terminalRoot);
 	term.onData(data => {
 		sendMessage({ type: "input", data });

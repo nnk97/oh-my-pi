@@ -2,7 +2,7 @@ import * as path from "node:path";
 import * as url from "node:url";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Server, ServerWebSocket } from "bun";
-import type { ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
+import type { ClientCapabilities, ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
 import { parseClientMessage, serializeServerMessage } from "./protocol";
 import { getActiveWebTerminalBridge, type WebTerminalBridge } from "./terminal-bridge";
 
@@ -24,6 +24,18 @@ type WebTerminalClientConfig = {
 	fontSize?: number;
 };
 
+function isSameCapabilities(left: ClientCapabilities | null, right: ClientCapabilities): boolean {
+	if (!left) return false;
+	return (
+		left.fontFamilyConfigured === right.fontFamilyConfigured &&
+		left.fontFamilyResolved === right.fontFamilyResolved &&
+		left.fontSize === right.fontSize &&
+		left.fontMatch === right.fontMatch &&
+		left.supportsNerdSymbols === right.supportsNerdSymbols &&
+		left.supportsTokenEmoji === right.supportsTokenEmoji
+	);
+}
+
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 21357;
 
@@ -34,6 +46,7 @@ export class WebTerminalServer {
 	#activeBridge: WebTerminalBridge | null = null;
 	#activeBridgeUnsubscribe: (() => void) | null = null;
 	#activeSessionId = 0;
+	#activeClientCapabilities: ClientCapabilities | null = null;
 	#cwd: string;
 	readonly url: string;
 
@@ -77,7 +90,9 @@ export class WebTerminalServer {
 		this.#activeSocket = null;
 		this.#activeBridgeUnsubscribe?.();
 		this.#activeBridgeUnsubscribe = null;
+		this.#activeBridge?.setClientCapabilities(null);
 		this.#activeBridge = null;
+		this.#activeClientCapabilities = null;
 		logger.debug("Web terminal server stopped", { url: this.url });
 	}
 
@@ -150,6 +165,7 @@ export class WebTerminalServer {
 		this.#attachSocket(ws);
 		const sessionId = ++this.#activeSessionId;
 		ws.data.sessionId = sessionId;
+		this.#activeClientCapabilities = null;
 		this.#activeBridge = bridge;
 		this.#activeBridgeUnsubscribe?.();
 		this.#activeBridgeUnsubscribe = bridge.onOutput(data => {
@@ -193,6 +209,23 @@ export class WebTerminalServer {
 			} catch (error) {
 				this.#sendStatus(ws, "error", error instanceof Error ? error.message : String(error));
 			}
+			return;
+		}
+		if (message.type === "client_capabilities") {
+			if (isSameCapabilities(this.#activeClientCapabilities, message)) {
+				return;
+			}
+			this.#activeClientCapabilities = message;
+			logger.debug("Web terminal client capabilities", {
+				fontFamilyConfigured: message.fontFamilyConfigured,
+				fontFamilyResolved: message.fontFamilyResolved,
+				fontSize: message.fontSize,
+				fontMatch: message.fontMatch,
+				supportsNerdSymbols: message.supportsNerdSymbols,
+				supportsTokenEmoji: message.supportsTokenEmoji,
+			});
+			this.#activeBridge.setClientCapabilities(message);
+			return;
 		}
 	}
 
@@ -206,6 +239,8 @@ export class WebTerminalServer {
 		this.#activeBridgeUnsubscribe = null;
 		this.#activeBridge?.clearSize();
 		this.#activeBridge?.requestFullRender({ clear: true });
+		this.#activeBridge?.setClientCapabilities(null);
+		this.#activeClientCapabilities = null;
 		logger.debug("Web terminal size cleared", { size: this.#activeBridge?.getSize() });
 		this.#activeBridge = null;
 	}

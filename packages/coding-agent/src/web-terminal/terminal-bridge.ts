@@ -1,5 +1,14 @@
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { ProcessTerminal } from "@oh-my-pi/pi-tui";
+import {
+	getSymbolOverrides,
+	getSymbolPresetOverride,
+	setSymbolOverrides,
+	setSymbolPreset,
+	type SymbolKey,
+	type SymbolPreset,
+} from "../modes/theme/theme";
+import type { ClientCapabilities } from "./protocol";
 
 export type WebTerminalOutputListener = (data: string) => void;
 
@@ -10,6 +19,7 @@ export interface WebTerminalBridge {
 	clearSize(): void;
 	requestFullRender(options?: { clear?: boolean }): void;
 	getSize(): { cols: number; rows: number };
+	setClientCapabilities(capabilities: ClientCapabilities | null): void;
 }
 
 export class MirroredTerminal extends ProcessTerminal {
@@ -60,6 +70,80 @@ export class MirroredTerminal extends ProcessTerminal {
 let activeBridge: WebTerminalBridge | null = null;
 
 export function createWebTerminalBridge(ui: TUI, terminal: MirroredTerminal): WebTerminalBridge {
+	let activePresetOverride: SymbolPreset | null = null;
+	let previousPresetOverride: SymbolPreset | null = null;
+	let activeTokenOverride = false;
+	let previousSymbolOverrides: Partial<Record<SymbolKey, string>> | undefined;
+	let lastCapabilitiesKey: string | null = null;
+
+	const applyPresetOverride = (preset: SymbolPreset | null): void => {
+		if (preset === activePresetOverride) return;
+		if (preset) {
+			if (!activePresetOverride) {
+				previousPresetOverride = getSymbolPresetOverride() ?? "unicode";
+			}
+			activePresetOverride = preset;
+			void setSymbolPreset(preset).then(() => {
+				ui.requestFullRender(true);
+			});
+			return;
+		}
+		if (activePresetOverride) {
+			const restorePreset = previousPresetOverride ?? getSymbolPresetOverride() ?? "unicode";
+			activePresetOverride = null;
+			previousPresetOverride = null;
+			void setSymbolPreset(restorePreset).then(() => {
+				ui.requestFullRender(true);
+			});
+		}
+	};
+
+	const applyClientCapabilities = (capabilities: ClientCapabilities | null): void => {
+		const key = capabilities ? JSON.stringify(capabilities) : null;
+		if (key === lastCapabilitiesKey) return;
+		lastCapabilitiesKey = key;
+		if (!capabilities || capabilities.fontMatch === "unknown") {
+			applyPresetOverride(null);
+			if (activeTokenOverride) {
+				activeTokenOverride = false;
+				void setSymbolOverrides(previousSymbolOverrides ?? null).then(() => {
+					ui.requestFullRender(true);
+				});
+				previousSymbolOverrides = undefined;
+			}
+			return;
+		}
+		if (!capabilities.supportsNerdSymbols) {
+			if (!activePresetOverride) {
+				const currentPreset = getSymbolPresetOverride() ?? "unicode";
+				if (currentPreset === "nerd") {
+					applyPresetOverride("unicode");
+				}
+			}
+		} else {
+			applyPresetOverride(null);
+		}
+		if (!capabilities.supportsTokenEmoji) {
+			if (!activeTokenOverride) {
+				previousSymbolOverrides = getSymbolOverrides();
+				const nextOverrides: Partial<Record<SymbolKey, string>> = {
+					...(previousSymbolOverrides ?? {}),
+					"icon.tokens": "¤",
+				};
+				activeTokenOverride = true;
+				void setSymbolOverrides(nextOverrides).then(() => {
+					ui.requestFullRender(true);
+				});
+			}
+		} else if (activeTokenOverride) {
+			activeTokenOverride = false;
+			void setSymbolOverrides(previousSymbolOverrides ?? null).then(() => {
+				ui.requestFullRender(true);
+			});
+			previousSymbolOverrides = undefined;
+		}
+	};
+
 	return {
 		onOutput: listener => terminal.onOutput(listener),
 		injectInput: data => terminal.injectInput(data),
@@ -67,6 +151,7 @@ export function createWebTerminalBridge(ui: TUI, terminal: MirroredTerminal): We
 		clearSize: () => terminal.clearSize(),
 		requestFullRender: options => ui.requestFullRender(options?.clear ?? false),
 		getSize: () => ({ cols: terminal.columns, rows: terminal.rows }),
+		setClientCapabilities: capabilities => applyClientCapabilities(capabilities),
 	};
 }
 
