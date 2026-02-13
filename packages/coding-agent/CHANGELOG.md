@@ -14,6 +14,10 @@
 - Web terminal now adapts symbol rendering based on browser-reported font capabilities, downgrading Nerd glyphs when unsupported during a session
 - Web terminal uses Unicode 11 width rules to improve emoji alignment in xterm.js rendering
 - Web terminal now downgrades the token icon when the browser reports narrow emoji widths to prevent misalignment
+
+### Fixed
+- Stabilized the web terminal viewport by clamping to the visual viewport and using xterm char metrics for cell sizing
+- Avoided resetting symbol presets when font matching is unknown while keeping token fallback handling
 ## [12.1.0] - 2026-02-13
 
 ### Added

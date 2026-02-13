@@ -3,10 +3,10 @@ import { ProcessTerminal } from "@oh-my-pi/pi-tui";
 import {
 	getSymbolOverrides,
 	getSymbolPresetOverride,
-	setSymbolOverrides,
-	setSymbolPreset,
 	type SymbolKey,
 	type SymbolPreset,
+	setSymbolOverrides,
+	setSymbolPreset,
 } from "../modes/theme/theme";
 import type { ClientCapabilities } from "./protocol";
 
@@ -102,7 +102,7 @@ export function createWebTerminalBridge(ui: TUI, terminal: MirroredTerminal): We
 		const key = capabilities ? JSON.stringify(capabilities) : null;
 		if (key === lastCapabilitiesKey) return;
 		lastCapabilitiesKey = key;
-		if (!capabilities || capabilities.fontMatch === "unknown") {
+		if (!capabilities) {
 			applyPresetOverride(null);
 			if (activeTokenOverride) {
 				activeTokenOverride = false;
@@ -113,14 +113,14 @@ export function createWebTerminalBridge(ui: TUI, terminal: MirroredTerminal): We
 			}
 			return;
 		}
-		if (!capabilities.supportsNerdSymbols) {
+		if (capabilities.fontMatch !== "unknown" && !capabilities.supportsNerdSymbols) {
 			if (!activePresetOverride) {
 				const currentPreset = getSymbolPresetOverride() ?? "unicode";
 				if (currentPreset === "nerd") {
 					applyPresetOverride("unicode");
 				}
 			}
-		} else {
+		} else if (capabilities.fontMatch !== "unknown") {
 			applyPresetOverride(null);
 		}
 		if (!capabilities.supportsTokenEmoji) {

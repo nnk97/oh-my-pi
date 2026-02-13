@@ -20,6 +20,7 @@ type ClientCapabilities = {
 	fontSize: number;
 	fontMatch: "exact" | "fallback" | "unknown";
 	supportsNerdSymbols: boolean;
+	supportsTokenEmoji: boolean;
 };
 
 const runtimeConfig = (window as typeof window & { __OMP_WEB_TERMINAL_CONFIG?: WebTerminalRuntimeConfig })
@@ -55,6 +56,26 @@ function collectSizing(): Record<string, unknown> {
 		viewport: viewport ? { w: viewport.clientWidth, h: viewport.clientHeight } : null,
 		screen: screen ? { w: (screen as HTMLElement).clientWidth, h: (screen as HTMLElement).clientHeight } : null,
 	};
+}
+
+function applyViewportSize(): void {
+	const viewport = window.visualViewport;
+	const heightCandidates = [viewport?.height, window.innerHeight, document.documentElement.clientHeight].filter(
+		(value): value is number => typeof value === "number" && Number.isFinite(value),
+	);
+	const widthCandidates = [viewport?.width, window.innerWidth, document.documentElement.clientWidth].filter(
+		(value): value is number => typeof value === "number" && Number.isFinite(value),
+	);
+	const height = Math.min(...heightCandidates);
+	const width = Math.min(...widthCandidates);
+	const heightPx = `${Math.max(0, Math.floor(height))}px`;
+	const widthPx = `${Math.max(0, Math.floor(width))}px`;
+	document.documentElement.style.height = heightPx;
+	document.body.style.height = heightPx;
+	terminalRoot.style.height = heightPx;
+	document.documentElement.style.width = widthPx;
+	document.body.style.width = widthPx;
+	terminalRoot.style.width = widthPx;
 }
 
 function sendMessage(payload: object): void {
@@ -142,6 +163,18 @@ function sendCapabilities(): void {
 }
 
 function measureCell(): { width: number; height: number } {
+	const xtermMeasure = terminalRoot.querySelector(".xterm-char-measure-element") as HTMLElement | null;
+	if (xtermMeasure) {
+		const rect = xtermMeasure.getBoundingClientRect();
+		const contentLength = xtermMeasure.textContent?.length ?? 1;
+		const charWidth = rect.width > 0 ? rect.width / Math.max(1, contentLength) : 8;
+		const lineHeight = rect.height > 0 ? rect.height : 17;
+		return {
+			width: Math.max(4, Math.min(20, charWidth)),
+			height: Math.max(1, lineHeight),
+		};
+	}
+
 	const probe = document.createElement("span");
 	probe.textContent = "MMMMMMMMMM";
 	probe.style.position = "absolute";
@@ -166,7 +199,6 @@ function computeDimensions(): { cols: number; rows: number } | null {
 	if (!term) return null;
 	const rect = terminalRoot.getBoundingClientRect();
 	if (rect.width <= 0 || rect.height <= 0) return null;
-
 	const cell = measureCell();
 	let cols = Math.max(2, Math.floor(rect.width / cell.width) - RIGHT_MARGIN_COLS);
 	if (cols < 20 && rect.width > 500) {
@@ -209,11 +241,21 @@ function scheduleResize(reason: string): void {
 }
 
 function attachResizeHooks(): void {
+	const handleResize = (reason: string): void => {
+		applyViewportSize();
+		scheduleResize(reason);
+	};
 	window.addEventListener("resize", () => {
-		scheduleResize("window");
+		handleResize("window");
+	});
+	window.visualViewport?.addEventListener("resize", () => {
+		handleResize("visual-viewport");
+	});
+	window.visualViewport?.addEventListener("scroll", () => {
+		handleResize("visual-viewport-scroll");
 	});
 	document.fonts?.ready.then(() => {
-		scheduleResize("fonts-ready");
+		handleResize("fonts-ready");
 		sendCapabilities();
 	});
 }
@@ -283,6 +325,7 @@ function initTerminal(): void {
 };
 
 function boot(): void {
+	applyViewportSize();
 	initTerminal();
 	attachResizeHooks();
 	startWebSocket();

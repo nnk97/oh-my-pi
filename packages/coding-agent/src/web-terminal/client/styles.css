@@ -9,10 +9,10 @@
 html,
 body {
 	height: 100%;
-	min-height: 100dvh;
 	width: 100%;
 	margin: 0;
 	padding: 0;
+	overflow: hidden;
 	background: #0b0b0e;
 	font-family: "Fira Code", "FiraCode Nerd Font", "Cascadia Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }
@@ -23,10 +23,8 @@ body {
 }
 
 #terminal {
-	position: fixed;
-	inset: 0;
-	width: 100vw;
-	height: 100dvh;
+	width: 100%;
+	height: 100%;
 	padding: 0;
 	display: flex;
 	flex-direction: column;
@@ -34,9 +32,12 @@ body {
 
 #terminal,
 #terminal .xterm,
-#terminal .xterm-viewport,
-#terminal .xterm-screen {
+#terminal .xterm-viewport {
 	height: 100%;
+	width: 100%;
+}
+
+#terminal .xterm-screen {
 	width: 100%;
 }
 
