@@ -8,7 +8,7 @@ export interface WebTerminalBridge {
 	injectInput(data: string): void;
 	setSize(cols: number, rows: number): void;
 	clearSize(): void;
-	requestFullRender(): void;
+	requestFullRender(options?: { clear?: boolean }): void;
 	getSize(): { cols: number; rows: number };
 }
 
@@ -65,7 +65,7 @@ export function createWebTerminalBridge(ui: TUI, terminal: MirroredTerminal): We
 		injectInput: data => terminal.injectInput(data),
 		setSize: (cols, rows) => terminal.setSize(cols, rows),
 		clearSize: () => terminal.clearSize(),
-		requestFullRender: () => ui.requestFullRender(),
+		requestFullRender: options => ui.requestFullRender(options?.clear ?? false),
 		getSize: () => ({ cols: terminal.columns, rows: terminal.rows }),
 	};
 }

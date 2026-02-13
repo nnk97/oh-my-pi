@@ -19,6 +19,11 @@ type WebTerminalAsset = {
 	contentType: string;
 };
 
+type WebTerminalClientConfig = {
+	fontFamily?: string;
+	fontSize?: number;
+};
+
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 21357;
 
@@ -152,7 +157,7 @@ export class WebTerminalServer {
 			this.#send(ws, { type: "output", data });
 		});
 		this.#sendStatus(ws, "running", "Connected to host terminal.");
-		bridge.requestFullRender();
+		bridge.requestFullRender({ clear: true });
 		logger.debug("Web terminal attached", {
 			cwd: this.#cwd,
 			size: bridge.getSize(),
@@ -183,7 +188,7 @@ export class WebTerminalServer {
 				const cols = Math.max(1, Math.floor(message.cols));
 				const rows = Math.max(1, Math.floor(message.rows));
 				this.#activeBridge.setSize(cols, rows);
-				this.#activeBridge.requestFullRender();
+				this.#activeBridge.requestFullRender({ clear: true });
 				logger.debug("Web terminal size applied", { cols, rows });
 			} catch (error) {
 				this.#sendStatus(ws, "error", error instanceof Error ? error.message : String(error));
@@ -200,7 +205,7 @@ export class WebTerminalServer {
 		this.#activeBridgeUnsubscribe?.();
 		this.#activeBridgeUnsubscribe = null;
 		this.#activeBridge?.clearSize();
-		this.#activeBridge?.requestFullRender();
+		this.#activeBridge?.requestFullRender({ clear: true });
 		logger.debug("Web terminal size cleared", { size: this.#activeBridge?.getSize() });
 		this.#activeBridge = null;
 	}
@@ -238,6 +243,9 @@ async function buildAssets(): Promise<Map<string, WebTerminalAsset>> {
 	const clientEntry = path.join(clientDir, "client.ts");
 	const html = await Bun.file(htmlPath).text();
 	const css = await Bun.file(cssPath).text();
+	const clientConfig = getWebTerminalClientConfig();
+	const configScript = `<script>window.__OMP_WEB_TERMINAL_CONFIG=${JSON.stringify(clientConfig).replace(/</g, "\\u003c")};</script>`;
+	const htmlWithConfig = html.replace("</head>", `${configScript}</head>`);
 	const xtermCssPath = resolveModulePath("@xterm/xterm/css/xterm.css");
 	const xtermCss = await Bun.file(xtermCssPath).text();
 
@@ -259,12 +267,28 @@ async function buildAssets(): Promise<Map<string, WebTerminalAsset>> {
 	}
 	const clientScript = await scriptOutput.text();
 
-	assetMap.set("/", { content: html, contentType: "text/html" });
-	assetMap.set("/index.html", { content: html, contentType: "text/html" });
+	assetMap.set("/", { content: htmlWithConfig, contentType: "text/html" });
+	assetMap.set("/index.html", { content: htmlWithConfig, contentType: "text/html" });
 	assetMap.set("/client.js", { content: clientScript, contentType: "text/javascript" });
 	assetMap.set("/styles.css", { content: css, contentType: "text/css" });
 	assetMap.set("/xterm.css", { content: xtermCss, contentType: "text/css" });
 	return assetMap;
+}
+
+function getWebTerminalClientConfig(): WebTerminalClientConfig {
+	const config: WebTerminalClientConfig = {};
+	const fontFamily = Bun.env.OMP_WEB_TERMINAL_FONT?.trim();
+	if (fontFamily) {
+		config.fontFamily = fontFamily;
+	}
+	const fontSizeText = Bun.env.OMP_WEB_TERMINAL_FONT_SIZE?.trim();
+	if (fontSizeText) {
+		const parsed = Number(fontSizeText);
+		if (Number.isFinite(parsed)) {
+			config.fontSize = Math.max(8, Math.min(24, Math.round(parsed)));
+		}
+	}
+	return config;
 }
 
 function resolveModulePath(specifier: string): string {

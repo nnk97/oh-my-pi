@@ -4,10 +4,13 @@
 
 ### Added
 - Added local web terminal server with xterm.js client, CLI flag, and /web_terminal slash command with QR code display
+- Allowed overriding web terminal font family and size via OMP_WEB_TERMINAL_FONT and OMP_WEB_TERMINAL_FONT_SIZE environment variables
 
 ### Changed
 - Web terminal now mirrors the interactive session terminal in-browser instead of spawning a separate PTY, forwarding input/output through a shared bridge
 - Web client measures cells and resizes xterm based on the viewport to keep dimensions accurate and aligned with the host terminal size
+- Adjusted web terminal sizing logic to clamp measured cell widths, rely on window resize events, and clear the terminal on reconnect or size changes for more accurate dimensions
+- Updated QR code rendering to use full-size blocks and trim blank lines for better scan reliability
 ## [12.1.0] - 2026-02-13
 
 ### Added

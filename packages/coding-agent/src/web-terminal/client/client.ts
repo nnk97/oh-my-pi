@@ -8,14 +8,28 @@ const terminalRoot = (() => {
 	return element;
 })();
 
-const FONT_FAMILY = '"Cascadia Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace';
-const FONT_SIZE = 14;
+type WebTerminalRuntimeConfig = {
+	fontFamily?: string;
+	fontSize?: number;
+};
+
+const runtimeConfig = (window as typeof window & { __OMP_WEB_TERMINAL_CONFIG?: WebTerminalRuntimeConfig })
+	.__OMP_WEB_TERMINAL_CONFIG;
+
+const FONT_FAMILY =
+	runtimeConfig?.fontFamily?.trim() ||
+	'"Fira Code", "FiraCode Nerd Font", "Cascadia Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace';
+
+const configuredFontSize = runtimeConfig?.fontSize;
+const FONT_SIZE =
+	typeof configuredFontSize === "number" && Number.isFinite(configuredFontSize)
+		? Math.max(8, Math.min(24, Math.round(configuredFontSize)))
+		: 12;
+const RIGHT_MARGIN_COLS = 1;
 
 let term: Terminal | null = null;
 let ws: WebSocket | null = null;
 let resizeTimer: number | null = null;
-let lastContainerWidth = 0;
-let lastContainerHeight = 0;
 let lastSentCols = 0;
 let lastSentRows = 0;
 
@@ -50,9 +64,9 @@ function measureCell(): { width: number; height: number } {
 	probe.remove();
 
 	const charWidth = rect.width > 0 ? rect.width / 10 : 8;
-	const lineHeight = rect.height > 0 ? rect.height * 1.2 : 17;
+	const lineHeight = rect.height > 0 ? rect.height : 17;
 	return {
-		width: Math.max(1, charWidth),
+		width: Math.max(4, Math.min(20, charWidth)),
 		height: Math.max(1, lineHeight),
 	};
 }
@@ -63,7 +77,11 @@ function computeDimensions(): { cols: number; rows: number } | null {
 	if (rect.width <= 0 || rect.height <= 0) return null;
 
 	const cell = measureCell();
-	const cols = Math.max(2, Math.floor(rect.width / cell.width));
+	let cols = Math.max(2, Math.floor(rect.width / cell.width) - RIGHT_MARGIN_COLS);
+	if (cols < 20 && rect.width > 500) {
+		const fallbackCellWidth = Math.max(6, Math.min(14, FONT_SIZE * 0.62));
+		cols = Math.max(2, Math.floor(rect.width / fallbackCellWidth) - RIGHT_MARGIN_COLS);
+	}
 	const rows = Math.max(1, Math.floor(rect.height / cell.height));
 	if (term.cols !== cols || term.rows !== rows) {
 		term.resize(cols, rows);
@@ -80,6 +98,9 @@ function sendResize(): void {
 	if (dimensions.cols === lastSentCols && dimensions.rows === lastSentRows) {
 		return;
 	}
+	if (ws?.readyState !== WebSocket.OPEN) {
+		return;
+	}
 	lastSentCols = dimensions.cols;
 	lastSentRows = dimensions.rows;
 	const payload = { type: "resize", cols: dimensions.cols, rows: dimensions.rows };
@@ -88,9 +109,7 @@ function sendResize(): void {
 }
 
 function scheduleResize(reason: string): void {
-	if (resizeTimer !== null) {
-		window.clearTimeout(resizeTimer);
-	}
+	if (resizeTimer !== null) return;
 	console.log("[web-terminal] scheduleResize", { reason });
 	resizeTimer = window.setTimeout(() => {
 		resizeTimer = null;
@@ -99,20 +118,9 @@ function scheduleResize(reason: string): void {
 }
 
 function attachResizeHooks(): void {
-	const resizeObserver = new ResizeObserver(entries => {
-		const entry = entries[0];
-		if (!entry) return;
-		const width = Math.round(entry.contentRect.width);
-		const height = Math.round(entry.contentRect.height);
-		if (width === lastContainerWidth && height === lastContainerHeight) {
-			return;
-		}
-		lastContainerWidth = width;
-		lastContainerHeight = height;
-		scheduleResize("observer");
+	window.addEventListener("resize", () => {
+		scheduleResize("window");
 	});
-	resizeObserver.observe(terminalRoot);
-	window.addEventListener("resize", () => scheduleResize("window"));
 	document.fonts?.ready.then(() => {
 		scheduleResize("fonts-ready");
 	});
@@ -181,11 +189,6 @@ function boot(): void {
 	initTerminal();
 	attachResizeHooks();
 	startWebSocket();
-	requestAnimationFrame(() => {
-		requestAnimationFrame(() => {
-			sendResize();
-		});
-	});
 }
 
 if (document.readyState === "complete") {
