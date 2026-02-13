@@ -21,6 +21,8 @@ import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd } from "../../tools/path-utils";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog";
 import { openPath } from "../../utils/open";
+import { renderQrCode } from "../../web-terminal/qr";
+import { getOrStartWebTerminalServer } from "../../web-terminal/server";
 
 export class CommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
@@ -197,6 +199,17 @@ export class CommandController {
 			this.ctx.showStatus("Copied last agent message to clipboard");
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	async handleWebTerminalCommand(): Promise<void> {
+		try {
+			const server = await getOrStartWebTerminalServer({ cwd: this.ctx.sessionManager.getCwd() });
+			const qr = renderQrCode(server.url);
+			const lines = [`Web terminal: ${server.url}`, qr].filter(line => line.trim().length > 0);
+			this.ctx.showStatus(lines.join("\n"), { dim: false });
+		} catch (error) {
+			this.ctx.showError(`Failed to start web terminal: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 

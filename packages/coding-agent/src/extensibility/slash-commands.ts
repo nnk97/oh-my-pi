@@ -100,6 +100,7 @@ const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "export", description: "Export session to HTML file", inlineHint: "[path]" },
 	{ name: "dump", description: "Copy session transcript to clipboard" },
 	{ name: "share", description: "Share session as a secret GitHub gist" },
+	{ name: "web_terminal", description: "Start or show the local web terminal" },
 	{
 		name: "browser",
 		description: "Toggle browser headless vs visible mode",

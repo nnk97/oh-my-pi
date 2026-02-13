@@ -1,0 +1,26 @@
+:root {
+	color-scheme: dark;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+	padding: 0;
+	background: #0b0b0e;
+	font-family: "SF Mono", "Fira Code", "Consolas", "Liberation Mono", monospace;
+}
+
+#terminal {
+	height: 100%;
+	width: 100%;
+	padding: 12px;
+}
+
+.xterm {
+	font-size: 14px;
+}

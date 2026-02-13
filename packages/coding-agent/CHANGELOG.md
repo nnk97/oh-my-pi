@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### Added
+- Added local web terminal server with xterm.js client, CLI flag, and /web_terminal slash command with QR code display
 ## [12.1.0] - 2026-02-13
 
 ### Added

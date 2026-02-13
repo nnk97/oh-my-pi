@@ -24,6 +24,8 @@ use crate::task;
 /// Options for running a command in a PTY session.
 #[napi(object)]
 pub struct PtyStartOptions<'env> {
+	/// Shell binary used to execute the command (optional).
+	pub shell:      Option<String>,
 	/// Command string to execute.
 	pub command:    String,
 	/// Working directory for command execution.
@@ -54,6 +56,7 @@ pub struct PtyRunResult {
 
 #[derive(Clone)]
 struct PtyRunConfig {
+	shell:   Option<String>,
 	command: String,
 	cwd:     Option<String>,
 	env:     Option<HashMap<String, String>>,
@@ -106,6 +109,7 @@ impl PtySession {
 		>,
 	) -> Result<PromiseRaw<'env, PtyRunResult>> {
 		let run_config = PtyRunConfig {
+			shell:   options.shell,
 			command: options.command,
 			cwd:     options.cwd,
 			env:     options.env,
@@ -199,9 +203,27 @@ fn run_pty_sync(
 		})
 		.map_err(|err| Error::from_reason(format!("Failed to open PTY: {err}")))?;
 
-	let mut cmd = CommandBuilder::new("sh");
-	cmd.arg("-lc");
-	cmd.arg(&config.command);
+	let shell = config.shell.unwrap_or_else(|| {
+		if cfg!(windows) {
+			"cmd".to_string()
+		} else {
+			"sh".to_string()
+		}
+	});
+	let shell_lower = shell.to_lowercase();
+	let mut cmd = CommandBuilder::new(shell);
+	if shell_lower.contains("powershell") || shell_lower.contains("pwsh") {
+		cmd.arg("-NoLogo");
+		cmd.arg("-NoProfile");
+		cmd.arg("-Command");
+		cmd.arg(&config.command);
+	} else if shell_lower.contains("cmd") {
+		cmd.arg("/c");
+		cmd.arg(&config.command);
+	} else {
+		cmd.arg("-lc");
+		cmd.arg(&config.command);
+	}
 	if let Some(cwd) = config.cwd.as_ref() {
 		cmd.cwd(cwd);
 	}

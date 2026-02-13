@@ -31,6 +31,7 @@ import { type SessionInfo, SessionManager } from "./session/session-manager";
 import { resolvePromptInput } from "./system-prompt";
 import { getChangelogPath, getNewEntries, parseChangelog } from "./utils/changelog";
 import { printTimings, time } from "./utils/timings";
+import { getOrStartWebTerminalServer } from "./web-terminal/server";
 
 /** Conditional startup debug prints (stderr) when PI_DEBUG_STARTUP is set */
 const debugStartup = $env.PI_DEBUG_STARTUP ? (stage: string) => process.stderr.write(`[startup] ${stage}\n`) : () => {};
@@ -541,6 +542,14 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 	const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
 	const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
 	const mode = parsedArgs.mode || "text";
+	if (parsedArgs.webTerminal) {
+		if (isInteractive) {
+			const webTerminal = await getOrStartWebTerminalServer({ cwd });
+			notifs.push({ kind: "info", message: `Web terminal running at ${webTerminal.url}` });
+		} else {
+			writeStderr(chalk.yellow("--web-terminal is only available in interactive mode."));
+		}
+	}
 
 	// Initialize discovery system with settings for provider persistence
 	initializeWithSettings(settings);

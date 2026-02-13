@@ -199,6 +199,11 @@ export class InputController {
 				this.ctx.editor.setText("");
 				return;
 			}
+			if (text === "/web_terminal") {
+				await this.ctx.handleWebTerminalCommand();
+				this.ctx.editor.setText("");
+				return;
+			}
 			if (text === "/browser" || text.startsWith("/browser ")) {
 				const arg = text.slice(8).trim().toLowerCase();
 				const current = settings.get("browser.headless" as SettingPath) as boolean;

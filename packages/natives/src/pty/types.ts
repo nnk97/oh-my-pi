@@ -8,6 +8,8 @@ import type { Cancellable, TsFunc } from "../bindings";
  * Options for starting a command in a pseudo-terminal session.
  */
 export interface PtyStartOptions extends Cancellable {
+	/** Shell binary used to execute the command (optional). */
+	shell?: string;
 	/** Command to execute. */
 	command: string;
 	/** Working directory for command execution. */
