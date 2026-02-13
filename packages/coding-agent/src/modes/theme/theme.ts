@@ -179,6 +179,7 @@ export type SymbolKey =
 	| "tab.bash"
 	| "tab.lsp"
 	| "tab.ttsr"
+	| "tab.webterm"
 	| "tab.status";
 
 type SymbolMap = Record<SymbolKey, string>;
@@ -333,6 +334,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tab.tools": "🔧",
 	"tab.config": "⚙",
 	"tab.services": "🌐",
+	"tab.webterm": "🕸",
 	"tab.bash": "💻",
 	"tab.lsp": "📝",
 	"tab.ttsr": "⏱",
@@ -582,6 +584,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tab.tools": "󰠭",
 	"tab.config": "󰒓",
 	"tab.services": "󰖟",
+	"tab.webterm": "󰖩",
 	"tab.bash": "",
 	"tab.lsp": "󰌌",
 	"tab.ttsr": "󱎫",
@@ -737,6 +740,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tab.tools": "[T]",
 	"tab.config": "[C]",
 	"tab.services": "[S]",
+	"tab.webterm": "[W]",
 	"tab.bash": "[B]",
 	"tab.lsp": "[L]",
 	"tab.ttsr": "[R]",

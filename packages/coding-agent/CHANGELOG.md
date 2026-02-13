@@ -5,6 +5,7 @@
 ### Added
 - Added local web terminal server with xterm.js client, CLI flag, and /web_terminal slash command with QR code display
 - Allowed overriding web terminal font family and size via OMP_WEB_TERMINAL_FONT and OMP_WEB_TERMINAL_FONT_SIZE environment variables
+- Added WebTerm settings tab with multi-select interface binding configuration for the web terminal
 
 ### Changed
 - Web terminal now mirrors the interactive session terminal in-browser instead of spawning a separate PTY, forwarding input/output through a shared bridge
@@ -15,6 +16,7 @@
 - Web terminal uses Unicode 11 width rules to improve emoji alignment in xterm.js rendering
 - Web terminal now downgrades the token icon when the browser reports narrow emoji widths to prevent misalignment
 - Switched web QR rendering to the compact block variant to fit narrower terminals
+- Web terminal server now supports multiple bindings, surfaces connection lifecycle status, and respects the enable toggle
 
 ### Fixed
 - Stabilized the web terminal viewport by clamping to the visual viewport and using xterm char metrics for cell sizing

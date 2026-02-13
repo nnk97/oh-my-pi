@@ -21,6 +21,7 @@ export type SettingTab =
 	| "tools"
 	| "config"
 	| "services"
+	| "webterm"
 	| "bash"
 	| "lsp"
 	| "ttsr"
@@ -37,6 +38,7 @@ export const SETTING_TABS: SettingTab[] = [
 	"tools",
 	"config",
 	"services",
+	"webterm",
 	"bash",
 	"lsp",
 	"ttsr",
@@ -50,6 +52,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
 	tools: { label: "Tools", icon: "tab.tools" },
 	config: { label: "Config", icon: "tab.config" },
 	services: { label: "Services", icon: "tab.services" },
+	webterm: { label: "WebTerm", icon: "tab.webterm" },
 	bash: { label: "Bash", icon: "tab.bash" },
 	lsp: { label: "LSP", icon: "tab.lsp" },
 	ttsr: { label: "TTSR", icon: "tab.ttsr" },
@@ -628,6 +631,23 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// ─────────────────────────────────────────────────────────────────────────
+	// Web terminal settings
+	// ─────────────────────────────────────────────────────────────────────────
+	"webTerminal.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "webterm",
+			label: "Web terminal",
+			description: "Enable the web terminal feature",
+		},
+	},
+	"webTerminal.bindings": {
+		type: "array",
+		default: [] as WebTerminalBinding[],
+	},
+
+	// ─────────────────────────────────────────────────────────────────────────
 	// Bash interceptor settings
 	// ─────────────────────────────────────────────────────────────────────────
 	"bash.virtualTerminal": {
@@ -989,6 +1009,16 @@ export interface ExaSettings {
 	enableWebsets: boolean;
 }
 
+export interface WebTerminalBinding {
+	interface: string;
+	ip: string;
+}
+
+export interface WebTerminalSettings {
+	enabled: boolean;
+	bindings: WebTerminalBinding[];
+}
+
 export interface StatusLineSettings {
 	preset: StatusLinePreset;
 	separator: StatusLineSeparatorStyle;
@@ -1022,6 +1052,7 @@ export interface GroupTypeMap {
 	commit: CommitSettings;
 	ttsr: TtsrSettings;
 	exa: ExaSettings;
+	webTerminal: WebTerminalSettings;
 	statusLine: StatusLineSettings;
 	thinkingBudgets: ThinkingBudgetsSettings;
 	modelRoles: Record<string, string>;

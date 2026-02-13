@@ -2,17 +2,54 @@ import * as path from "node:path";
 import * as url from "node:url";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Server, ServerWebSocket } from "bun";
+import { settings } from "../config/settings";
 import type { ClientCapabilities, ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
 import { parseClientMessage, serializeServerMessage } from "./protocol";
 import { getActiveWebTerminalBridge, type WebTerminalBridge } from "./terminal-bridge";
+import {
+	getWebTerminalBindingOptions,
+	reconcileWebTerminalBindings,
+	resolveWebTerminalBindingsWithFallback,
+	type WebTerminalBindingError,
+	type WebTerminalBindingOption,
+} from "./interfaces";
+
+export type WebTerminalClientInfo = {
+	binding: WebTerminalBindingOption;
+	localAddress: string;
+	localPort: number;
+	remoteAddress?: string;
+	remotePort?: number;
+};
+
+export type WebTerminalListenerInfo = {
+	binding: WebTerminalBindingOption;
+	localAddress: string;
+	localPort: number;
+	reason: string;
+};
+
+export type WebTerminalServerCallbacks = {
+	onClientConnected?: (info: WebTerminalClientInfo) => void;
+	onClientDisconnected?: (info: WebTerminalClientInfo) => void;
+	onListenerStopped?: (info: WebTerminalListenerInfo) => void;
+	onServerStopped?: (info: { reason: string }) => void;
+};
 
 export interface WebTerminalServerOptions {
 	host?: string;
 	port?: number;
 	cwd?: string;
+	callbacks?: WebTerminalServerCallbacks;
 }
 
-type WebTerminalSocketData = { sessionId: number | null; capabilities?: ClientCapabilities };
+type WebTerminalSocketData = {
+	sessionId: number | null;
+	capabilities?: ClientCapabilities;
+	bindingId?: string;
+	remoteAddress?: string;
+	remotePort?: number;
+};
 
 type WebTerminalAsset = {
 	content: string;
@@ -36,11 +73,11 @@ function isSameCapabilities(left: ClientCapabilities | null, right: ClientCapabi
 	);
 }
 
-const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 21357;
 
 export class WebTerminalServer {
-	#server: Server<WebTerminalSocketData>;
+	#servers = new Map<string, Server<WebTerminalSocketData>>();
+	#bindings = new Map<string, WebTerminalBindingOption>();
 	#assets: Map<string, WebTerminalAsset>;
 	#activeSocket: ServerWebSocket<WebTerminalSocketData> | null = null;
 	#activeBridge: WebTerminalBridge | null = null;
@@ -48,56 +85,165 @@ export class WebTerminalServer {
 	#activeSessionId = 0;
 	#activeClientCapabilities: ClientCapabilities | null = null;
 	#cwd: string;
-	readonly url: string;
+	#bindingErrors: WebTerminalBindingError[] = [];
+	#port: number;
+	#urls: string[] = [];
+	#url = "";
+	#callbacks: WebTerminalServerCallbacks | null = null;
 
-	private constructor(
-		server: Server<WebTerminalSocketData>,
-		assets: Map<string, WebTerminalAsset>,
-		url: string,
-		cwd: string,
-	) {
-		this.#server = server;
+	private constructor(assets: Map<string, WebTerminalAsset>, port: number, cwd: string) {
 		this.#assets = assets;
-		this.url = url;
+		this.#port = port;
 		this.#cwd = cwd;
 	}
 
-	static async start(options: WebTerminalServerOptions = {}): Promise<WebTerminalServer> {
-		const host = options.host ?? DEFAULT_HOST;
+	static async start(
+		bindings: WebTerminalBindingOption[],
+		options: WebTerminalServerOptions = {},
+	): Promise<WebTerminalServer> {
 		const port = options.port ?? DEFAULT_PORT;
 		const cwd = options.cwd ?? process.cwd();
 		const assets = await buildAssets();
-		const url = `http://${host}:${port}`;
-		let instance!: WebTerminalServer;
-		const server = Bun.serve<WebTerminalSocketData>({
-			hostname: host,
-			port,
-			fetch: (req, serverInstance) => instance.#handleFetch(req, serverInstance),
-			websocket: {
-				open: ws => instance.#handleOpen(ws),
-				message: (ws, message) => instance.#handleMessage(ws, normalizeMessage(message)),
-				close: ws => instance.#handleClose(ws),
-			},
-		});
-
-		instance = new WebTerminalServer(server, assets, url, cwd);
-		logger.debug("Web terminal server started", { url, host, port, cwd });
+		const instance = new WebTerminalServer(assets, port, cwd);
+		const callbacks = options.callbacks ?? cachedCallbacks;
+		if (callbacks) {
+			instance.setCallbacks(callbacks);
+		}
+		instance.applyBindings(bindings);
+		if (instance.urls.length === 0) {
+			instance.stop("No web terminal bindings available");
+			throw new Error("No web terminal bindings available.");
+		}
+		logger.debug("Web terminal server started", { urls: instance.urls, port, cwd });
 		return instance;
 	}
 
-	stop(): void {
-		this.#server.stop();
-		this.#activeSocket = null;
-		this.#activeBridgeUnsubscribe?.();
-		this.#activeBridgeUnsubscribe = null;
-		this.#activeBridge?.setClientCapabilities(null);
-		this.#activeBridge = null;
-		this.#activeClientCapabilities = null;
-		logger.debug("Web terminal server stopped", { url: this.url });
+	stop(reason = "Web terminal stopped"): void {
+		this.#disconnectActiveClient(reason);
+		for (const server of this.#servers.values()) {
+			server.stop();
+		}
+		this.#emitServerStopped(reason);
+		this.#servers.clear();
+		this.#bindings.clear();
+		this.#bindingErrors = [];
+		this.#urls = [];
+		this.#url = "";
+		logger.debug("Web terminal server stopped", { reason });
 	}
 
 	get isRunning(): boolean {
-		return this.#server !== undefined;
+		return this.#servers.size > 0;
+	}
+
+	get urls(): string[] {
+		return this.#urls;
+	}
+
+	get url(): string {
+		return this.#url;
+	}
+
+	get bindingErrors(): WebTerminalBindingError[] {
+		return this.#bindingErrors;
+	}
+
+	get port(): number {
+		return this.#port;
+	}
+
+	setCwd(cwd: string): void {
+		this.#cwd = cwd;
+	}
+
+	setCallbacks(callbacks: WebTerminalServerCallbacks | null): void {
+		this.#callbacks = callbacks;
+	}
+
+	applyBindings(bindings: WebTerminalBindingOption[]): void {
+		const desired = new Map(bindings.map(binding => [binding.id, binding]));
+		const removed: WebTerminalBindingOption[] = [];
+		for (const [id, binding] of this.#bindings.entries()) {
+			if (!desired.has(id)) {
+				removed.push(binding);
+			}
+		}
+		for (const binding of removed) {
+			const server = this.#servers.get(binding.id);
+			if (server) {
+				if (this.#activeSocket?.data.bindingId === binding.id) {
+					this.#disconnectActiveClient("Web terminal binding removed");
+				}
+				server.stop();
+			}
+			this.#emitListenerStopped(binding, "Web terminal binding removed");
+			this.#servers.delete(binding.id);
+			this.#bindings.delete(binding.id);
+		}
+
+		const failures: WebTerminalBindingError[] = [];
+		for (const binding of bindings) {
+			if (this.#servers.has(binding.id)) continue;
+			try {
+				const server = this.#startListener(binding);
+				this.#servers.set(binding.id, server);
+				this.#bindings.set(binding.id, binding);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				logger.warn("Web terminal listener failed", {
+					binding: binding.label,
+					error: message,
+				});
+				failures.push({
+					binding,
+					error: message,
+				});
+			}
+		}
+		this.#bindingErrors = failures;
+
+		const activeBindings = bindings.filter(binding => this.#servers.has(binding.id));
+		this.#urls = activeBindings.map(binding => `http://${binding.ip}:${this.#port}`);
+		this.#url = this.#urls[0] ?? "";
+	}
+
+	#buildClientInfo(ws: ServerWebSocket<WebTerminalSocketData>): WebTerminalClientInfo | null {
+		const bindingId = ws.data.bindingId;
+		if (!bindingId) return null;
+		const binding = this.#bindings.get(bindingId);
+		if (!binding) return null;
+		return {
+			binding,
+			localAddress: binding.ip,
+			localPort: this.#port,
+			remoteAddress: ws.data.remoteAddress,
+			remotePort: ws.data.remotePort,
+		};
+	}
+
+	#emitClientConnected(ws: ServerWebSocket<WebTerminalSocketData>): void {
+		const info = this.#buildClientInfo(ws);
+		if (!info) return;
+		this.#callbacks?.onClientConnected?.(info);
+	}
+
+	#emitClientDisconnected(ws: ServerWebSocket<WebTerminalSocketData>): void {
+		const info = this.#buildClientInfo(ws);
+		if (!info) return;
+		this.#callbacks?.onClientDisconnected?.(info);
+	}
+
+	#emitListenerStopped(binding: WebTerminalBindingOption, reason: string): void {
+		this.#callbacks?.onListenerStopped?.({
+			binding,
+			localAddress: binding.ip,
+			localPort: this.#port,
+			reason,
+		});
+	}
+
+	#emitServerStopped(reason: string): void {
+		this.#callbacks?.onServerStopped?.({ reason });
 	}
 
 	#canAcceptClient(): boolean {
@@ -108,7 +254,11 @@ export class WebTerminalServer {
 		this.#activeSocket = ws;
 	}
 
-	#handleFetch(req: Request, server: Server<WebTerminalSocketData>): Response | undefined {
+	#handleFetch(
+		req: Request,
+		server: Server<WebTerminalSocketData>,
+		bindingId: string,
+	): Response | undefined {
 		const requestUrl = new URL(req.url);
 		if (requestUrl.pathname === "/favicon.ico") {
 			return new Response(null, { status: 204 });
@@ -122,7 +272,15 @@ export class WebTerminalServer {
 				logger.warn("Web terminal websocket rejected (already active)");
 				return new Response("Web terminal already connected.", { status: 409 });
 			}
-			const upgraded = server.upgrade(req, { data: { sessionId: null } });
+			const requestIp = server.requestIP(req);
+			const upgraded = server.upgrade(req, {
+				data: {
+					sessionId: null,
+					bindingId,
+					remoteAddress: requestIp?.address,
+					remotePort: requestIp?.port,
+				},
+			});
 			if (!upgraded) {
 				logger.error("Web terminal websocket upgrade failed");
 				return new Response("WebSocket upgrade failed.", { status: 400 });
@@ -161,16 +319,19 @@ export class WebTerminalServer {
 	async #startSession(ws: ServerWebSocket<WebTerminalSocketData>): Promise<void> {
 		if (!this.#canAcceptClient()) {
 			this.#sendStatus(ws, "error", "Web terminal is already in use.");
+			logger.warn("Web terminal session rejected", { reason: "already connected" });
 			ws.close();
 			return;
 		}
 		const bridge = getActiveWebTerminalBridge();
 		if (!bridge) {
 			this.#sendStatus(ws, "error", "No active terminal session to mirror.");
+			logger.warn("Web terminal session rejected", { reason: "no active bridge" });
 			ws.close();
 			return;
 		}
 		this.#attachSocket(ws);
+		this.#emitClientConnected(ws);
 		const sessionId = ++this.#activeSessionId;
 		ws.data.sessionId = sessionId;
 		const pendingCapabilities = ws.data.capabilities;
@@ -250,11 +411,33 @@ export class WebTerminalServer {
 	}
 
 	#handleClose(ws: ServerWebSocket<WebTerminalSocketData>): void {
-		if (this.#activeSocket === ws) {
-			this.#activeSocket = null;
+		if (this.#activeSocket !== ws) return;
+		this.#clearActiveClient(ws);
+	}
+
+	#disconnectActiveClient(reason: string): void {
+		const socket = this.#activeSocket;
+		if (!socket) return;
+		try {
+			socket.close(1001, reason);
+		} catch {
+			// Ignore close errors
 		}
-		ws.data.sessionId = null;
-		ws.data.capabilities = undefined;
+		this.#clearActiveClient(socket);
+	}
+
+	#clearActiveClient(ws?: ServerWebSocket<WebTerminalSocketData>): void {
+		if (ws && this.#activeSocket && this.#activeSocket !== ws) {
+			return;
+		}
+		if (ws) {
+			this.#emitClientDisconnected(ws);
+		}
+		this.#activeSocket = null;
+		if (ws) {
+			ws.data.sessionId = null;
+			ws.data.capabilities = undefined;
+		}
 		logger.debug("Web terminal client disconnected");
 		this.#activeBridgeUnsubscribe?.();
 		this.#activeBridgeUnsubscribe = null;
@@ -264,6 +447,21 @@ export class WebTerminalServer {
 		this.#activeClientCapabilities = null;
 		logger.debug("Web terminal size cleared", { size: this.#activeBridge?.getSize() });
 		this.#activeBridge = null;
+	}
+
+	#startListener(binding: WebTerminalBindingOption): Server<WebTerminalSocketData> {
+		const server = Bun.serve<WebTerminalSocketData>({
+			hostname: binding.ip,
+			port: this.#port,
+			fetch: (req, serverInstance) => this.#handleFetch(req, serverInstance, binding.id),
+			websocket: {
+				open: ws => this.#handleOpen(ws),
+				message: (ws, message) => this.#handleMessage(ws, normalizeMessage(message)),
+				close: ws => this.#handleClose(ws),
+			},
+		});
+		logger.debug("Web terminal listener started", { binding: binding.label, port: this.#port });
+		return server;
 	}
 
 	#filterOutput(data: string, capabilities: ClientCapabilities | null): string {
@@ -285,15 +483,88 @@ export class WebTerminalServer {
 }
 
 let cachedServer: WebTerminalServer | null = null;
+let cachedCallbacks: WebTerminalServerCallbacks | null = null;
 
 export async function getOrStartWebTerminalServer(options: WebTerminalServerOptions = {}): Promise<WebTerminalServer> {
-	if (cachedServer) return cachedServer;
-	cachedServer = await WebTerminalServer.start(options);
+	if (!settings.get("webTerminal.enabled")) {
+		stopWebTerminalServer("Web terminal disabled");
+		throw new Error("Web terminal is disabled in settings.");
+	}
+
+	if (options.callbacks) {
+		cachedCallbacks = options.callbacks;
+		if (cachedServer) {
+			cachedServer.setCallbacks(options.callbacks);
+		}
+	}
+
+	const port = options.port ?? DEFAULT_PORT;
+	if (cachedServer && cachedServer.port !== port) {
+		cachedServer.stop("Web terminal port changed");
+		cachedServer = null;
+	}
+
+	const bindings = resolveBindings(options);
+	if (bindings.length === 0) {
+		throw new Error("No available web terminal bindings.");
+	}
+
+	if (cachedServer) {
+		cachedServer.setCwd(options.cwd ?? process.cwd());
+		cachedServer.applyBindings(bindings);
+		if (cachedServer.urls.length === 0) {
+			cachedServer.stop("Web terminal bindings unavailable");
+			cachedServer = null;
+			throw new Error("No available web terminal bindings.");
+		}
+		return cachedServer;
+	}
+
+	cachedServer = await WebTerminalServer.start(bindings, { ...options, port });
 	return cachedServer;
 }
 
 export function getWebTerminalServer(): WebTerminalServer | null {
 	return cachedServer;
+}
+
+export function setWebTerminalServerCallbacks(callbacks: WebTerminalServerCallbacks | null): void {
+	cachedCallbacks = callbacks;
+	if (cachedServer) {
+		cachedServer.setCallbacks(callbacks);
+	}
+}
+
+export function stopWebTerminalServer(reason = "Web terminal stopped"): void {
+	if (!cachedServer) return;
+	cachedServer.stop(reason);
+	cachedServer = null;
+}
+
+function resolveBindings(options: WebTerminalServerOptions): WebTerminalBindingOption[] {
+	if (options.host) {
+		const host = options.host;
+		const isLoopback = host === "127.0.0.1" || host === "localhost";
+		return [
+			{
+				id: `manual:${host}`,
+				interface: "manual",
+				ip: host,
+				label: `(manual/${host})`,
+				isLoopback,
+				isInternal: isLoopback,
+			},
+		];
+	}
+
+	const bindingOptions = getWebTerminalBindingOptions();
+	const configuredBindings = settings.get("webTerminal.bindings");
+	if (configuredBindings.length === 0) {
+		const { active } = resolveWebTerminalBindingsWithFallback(configuredBindings, bindingOptions);
+		return active;
+	}
+	const { active } = reconcileWebTerminalBindings(configuredBindings, bindingOptions);
+	return active;
 }
 
 async function buildAssets(): Promise<Map<string, WebTerminalAsset>> {

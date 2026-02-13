@@ -25,6 +25,7 @@ import { getRecentSessions } from "../session/session-manager";
 import type { ExitPlanModeDetails } from "../tools";
 import { setTerminalTitle } from "../utils/title-generator";
 import { createWebTerminalBridge, MirroredTerminal, setActiveWebTerminalBridge } from "../web-terminal/terminal-bridge";
+import { setWebTerminalServerCallbacks } from "../web-terminal/server";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { CustomEditor } from "./components/custom-editor";
@@ -322,6 +323,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.start();
 		this.isInitialized = true;
 		this.ui.requestRender(true);
+
+		setWebTerminalServerCallbacks({
+			onClientConnected: info => {
+				const remote = info.remoteAddress && info.remotePort !== undefined
+					? `${info.remoteAddress}:${info.remotePort}`
+					: "unknown";
+				const local = `${info.localAddress}:${info.localPort}`;
+				this.showStatus(`Web terminal client connected from ${remote} to ${local}`);
+			},
+			onClientDisconnected: info => {
+				const remote = info.remoteAddress && info.remotePort !== undefined
+					? `${info.remoteAddress}:${info.remotePort}`
+					: "unknown";
+				const local = `${info.localAddress}:${info.localPort}`;
+				this.showStatus(`Web terminal client disconnected from ${remote} to ${local}`);
+			},
+			onListenerStopped: info => {
+				const local = `${info.localAddress}:${info.localPort}`;
+				this.showStatus(`Web terminal listener stopped on ${local} (${info.reason})`);
+			},
+			onServerStopped: info => {
+				this.showStatus(`Web terminal stopped (${info.reason}).`);
+			},
+		});
 
 		// Set initial terminal title (will be updated when session title is generated)
 		this.ui.terminal.setTitle("π");

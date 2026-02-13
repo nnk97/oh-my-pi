@@ -544,8 +544,14 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 	const mode = parsedArgs.mode || "text";
 	if (parsedArgs.webTerminal) {
 		if (isInteractive) {
-			const webTerminal = await getOrStartWebTerminalServer({ cwd });
-			notifs.push({ kind: "info", message: `Web terminal running at ${webTerminal.url}` });
+			if (!settings.get("webTerminal.enabled")) {
+				notifs.push({ kind: "warn", message: "Web terminal is disabled in settings." });
+			} else {
+				const webTerminal = await getOrStartWebTerminalServer({ cwd });
+				const urls = webTerminal.urls;
+				const message = urls.length > 1 ? `Web terminal running at:\n${urls.map(url => `  ${url}`).join("\n")}` : `Web terminal running at ${webTerminal.url}`;
+				notifs.push({ kind: "info", message });
+			}
 		} else {
 			writeStderr(chalk.yellow("--web-terminal is only available in interactive mode."));
 		}

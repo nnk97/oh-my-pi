@@ -7,6 +7,7 @@ import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi
 import { Snowflake } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { reset as resetCapabilities } from "../../capability";
+import { settings } from "../../config/settings";
 import { loadCustomShare } from "../../export/custom-share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import { getGatewayStatus } from "../../ipy/gateway-coordinator";
@@ -22,7 +23,11 @@ import { resolveToCwd } from "../../tools/path-utils";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog";
 import { openPath } from "../../utils/open";
 import { renderQrCode } from "../../web-terminal/qr";
-import { getOrStartWebTerminalServer } from "../../web-terminal/server";
+import {
+	getOrStartWebTerminalServer,
+	getWebTerminalServer,
+	stopWebTerminalServer,
+} from "../../web-terminal/server";
 
 export class CommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
@@ -204,9 +209,34 @@ export class CommandController {
 
 	async handleWebTerminalCommand(): Promise<void> {
 		try {
+			if (!settings.get("webTerminal.enabled")) {
+				this.ctx.showError("Web terminal is disabled in settings.");
+				return;
+			}
+			const existing = getWebTerminalServer();
+			if (existing?.isRunning) {
+				stopWebTerminalServer("Web terminal stopped via /web_terminal");
+				return;
+			}
 			const server = await getOrStartWebTerminalServer({ cwd: this.ctx.sessionManager.getCwd() });
-			const qr = renderQrCode(server.url);
-			const lines = [`Web terminal: ${server.url}`, qr].filter(line => line.trim().length > 0);
+			const urls = server.urls;
+			const lines = ["Web terminal URLs:"];
+			urls.forEach((url, index) => {
+				lines.push(`  ${url}`);
+				const qr = renderQrCode(url);
+				if (qr.trim().length > 0) {
+					lines.push(qr);
+				}
+				if (index < urls.length - 1) {
+					lines.push("");
+				}
+			});
+			if (server.bindingErrors.length > 0) {
+				lines.push("", "Failed bindings:");
+				for (const error of server.bindingErrors) {
+					lines.push(`  ${error.binding.label} - ${error.error}`);
+				}
+			}
 			this.ctx.showStatus(lines.join("\n"), { dim: false });
 		} catch (error) {
 			this.ctx.showError(`Failed to start web terminal: ${error instanceof Error ? error.message : String(error)}`);

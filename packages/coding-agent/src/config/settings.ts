@@ -50,6 +50,8 @@ export type {
 	ThinkingBudgetsSettings,
 	TodoCompletionSettings,
 	TtsrSettings,
+	WebTerminalBinding,
+	WebTerminalSettings,
 } from "./settings-schema";
 export { getDefault, getEnumValues, getPathsForTab, getType, getUi, hasUi } from "./settings-schema";
 

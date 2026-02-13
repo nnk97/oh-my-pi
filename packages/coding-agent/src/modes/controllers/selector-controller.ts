@@ -28,6 +28,11 @@ import {
 import type { InteractiveModeContext } from "../../modes/types";
 import { SessionManager } from "../../session/session-manager";
 import { setPreferredImageProvider, setPreferredSearchProvider } from "../../tools";
+import {
+	getWebTerminalServer,
+	stopWebTerminalServer,
+} from "../../web-terminal/server";
+import { getWebTerminalBindingOptions, reconcileWebTerminalBindings } from "../../web-terminal/interfaces";
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -230,6 +235,47 @@ export class SelectorController {
 				setColorBlindMode(value === "true" || value === true).then(() => {
 					this.ctx.ui.invalidate();
 				});
+				break;
+			}
+			case "webTerminal.enabled": {
+				if (!value) {
+					stopWebTerminalServer("Web terminal disabled");
+					break;
+				}
+				const server = getWebTerminalServer();
+				if (!server) break;
+				const bindingOptions = getWebTerminalBindingOptions();
+				const { active } = reconcileWebTerminalBindings(
+					settings.get("webTerminal.bindings"),
+					bindingOptions,
+				);
+				if (active.length === 0) {
+					stopWebTerminalServer("Web terminal bindings unavailable");
+					break;
+				}
+				server.applyBindings(active);
+				break;
+			}
+			case "webTerminal.bindings": {
+				const server = getWebTerminalServer();
+				if (!server) break;
+				if (!settings.get("webTerminal.enabled")) {
+					stopWebTerminalServer("Web terminal disabled");
+					break;
+				}
+				const bindingOptions = getWebTerminalBindingOptions();
+				const { active } = reconcileWebTerminalBindings(
+					settings.get("webTerminal.bindings"),
+					bindingOptions,
+				);
+				if (active.length === 0) {
+					stopWebTerminalServer("Web terminal bindings unavailable");
+					break;
+				}
+				server.applyBindings(active);
+				if (server.urls.length === 0) {
+					stopWebTerminalServer("Web terminal bindings unavailable");
+				}
 				break;
 			}
 			case "temperature": {
