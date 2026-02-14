@@ -3,7 +3,7 @@ import * as url from "node:url";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Server, ServerWebSocket } from "bun";
 import { settings } from "../config/settings";
-import type { ClientCapabilities, ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
+import type { ClientCapabilities, ClientDebugInfo, ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
 import { parseClientMessage, serializeServerMessage } from "./protocol";
 import { getActiveWebTerminalBridge, type WebTerminalBridge } from "./terminal-bridge";
 import {
@@ -32,6 +32,7 @@ export type WebTerminalListenerInfo = {
 export type WebTerminalServerCallbacks = {
 	onClientConnected?: (info: WebTerminalClientInfo) => void;
 	onClientDisconnected?: (info: WebTerminalClientInfo) => void;
+	onClientDebug?: (info: WebTerminalClientInfo, debug: ClientDebugInfo, reason?: string) => void;
 	onListenerStopped?: (info: WebTerminalListenerInfo) => void;
 	onServerStopped?: (info: { reason: string }) => void;
 };
@@ -233,6 +234,12 @@ export class WebTerminalServer {
 		this.#callbacks?.onClientDisconnected?.(info);
 	}
 
+	#emitClientDebug(ws: ServerWebSocket<WebTerminalSocketData>, debug: ClientDebugInfo, reason?: string): void {
+		const info = this.#buildClientInfo(ws);
+		if (!info) return;
+		this.#callbacks?.onClientDebug?.(info, debug, reason);
+	}
+
 	#emitListenerStopped(binding: WebTerminalBindingOption, reason: string): void {
 		this.#callbacks?.onListenerStopped?.({
 			binding,
@@ -378,6 +385,14 @@ export class WebTerminalServer {
 				supportsTokenEmoji: message.supportsTokenEmoji,
 			});
 			this.#activeBridge.setClientCapabilities(message);
+			return;
+		}
+		if (message.type === "client_debug") {
+			logger.debug("Web terminal client debug", {
+				reason: message.reason,
+				info: message.info,
+			});
+			this.#emitClientDebug(ws, message.info, message.reason);
 			return;
 		}
 		if (!this.#activeBridge || ws.data.sessionId !== this.#activeSessionId) {

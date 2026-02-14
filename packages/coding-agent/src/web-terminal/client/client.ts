@@ -1,5 +1,6 @@
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
+import type { ClientDebugInfo } from "../protocol";
 
 const terminalRoot = (() => {
 	const element = document.getElementById("terminal");
@@ -182,6 +183,57 @@ function sendCapabilities(): void {
 	sendMessage(payload);
 }
 
+function collectDebugInfo(): ClientDebugInfo {
+	const rect = terminalRoot.getBoundingClientRect();
+	const viewport = window.visualViewport;
+	const capabilities = collectCapabilities();
+	return {
+		timestamp: new Date().toISOString(),
+		location: window.location.href,
+		userAgent: navigator.userAgent,
+		devicePixelRatio: window.devicePixelRatio,
+		viewport: {
+			innerWidth: window.innerWidth,
+			innerHeight: window.innerHeight,
+			documentWidth: document.documentElement.clientWidth,
+			documentHeight: document.documentElement.clientHeight,
+			visualViewport: viewport
+				? {
+					width: viewport.width,
+					height: viewport.height,
+					scale: viewport.scale,
+					offsetLeft: viewport.offsetLeft,
+					offsetTop: viewport.offsetTop,
+				}
+				: null,
+		},
+		terminal: {
+			cols: term?.cols ?? null,
+			rows: term?.rows ?? null,
+			rootRect: {
+				width: rect.width,
+				height: rect.height,
+				top: rect.top,
+				left: rect.left,
+			},
+			sizing: collectSizing(),
+			cell: measureCell(),
+		},
+		capabilities,
+		config: {
+			fontFamily: runtimeConfig?.fontFamily,
+			fontSize: runtimeConfig?.fontSize,
+		},
+	};
+}
+
+function debugWebTerminal(reason = "manual"): ClientDebugInfo {
+	const info = collectDebugInfo();
+	console.log("[web-terminal] debug", { reason, info });
+	sendMessage({ type: "client_debug", reason, info });
+	return info;
+}
+
 function measureCell(): { width: number; height: number } | null {
 	const xtermMeasure = terminalRoot.querySelector(".xterm-char-measure-element") as HTMLElement | null;
 	if (xtermMeasure) {
@@ -271,6 +323,7 @@ function startWebSocket(): void {
 		console.log("[web-terminal] websocket open", wsUrl.toString());
 		requestAnimationFrame(() => sendResize());
 		sendCapabilities();
+		debugWebTerminal("websocket-open");
 	});
 	ws.addEventListener("message", event => {
 		let payload: unknown;
@@ -319,13 +372,12 @@ function initTerminal(): void {
 	});
 }
 
-(window as typeof window & { webTerminalDebug?: () => void }).webTerminalDebug = () => {
-	console.log("[web-terminal] debug", {
-		cols: term?.cols,
-		rows: term?.rows,
-		sizing: collectSizing(),
-	});
-};
+(window as typeof window & { webTerminalDebug?: () => void; debugWebTerminal?: () => ClientDebugInfo }).webTerminalDebug =
+	() => {
+		debugWebTerminal("manual");
+	};
+(window as typeof window & { webTerminalDebug?: () => void; debugWebTerminal?: () => ClientDebugInfo }).debugWebTerminal =
+	() => debugWebTerminal("manual");
 
 function boot(): void {
 	applyViewportSize();

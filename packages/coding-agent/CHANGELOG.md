@@ -6,6 +6,7 @@
 - Added local web terminal server with xterm.js client, CLI flag, and /web_terminal slash command with QR code display
 - Allowed overriding web terminal font family and size via OMP_WEB_TERMINAL_FONT and OMP_WEB_TERMINAL_FONT_SIZE environment variables
 - Added WebTerm settings tab with multi-select interface binding configuration for the web terminal
+- Added web terminal client debug reporting that captures viewport, sizing, and configuration metrics for troubleshooting
 
 ### Changed
 - Web terminal now mirrors the interactive session terminal in-browser instead of spawning a separate PTY, forwarding input/output through a shared bridge
