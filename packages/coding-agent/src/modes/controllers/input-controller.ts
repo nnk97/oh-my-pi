@@ -1,7 +1,6 @@
 import * as fs from "node:fs/promises";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { copyToClipboard, readImageFromClipboard } from "@oh-my-pi/pi-natives";
-import { sanitizeText } from "@oh-my-pi/pi-natives";
+import { copyToClipboard, readImageFromClipboard, sanitizeText } from "@oh-my-pi/pi-natives";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { SettingPath, SettingValue } from "../../config/settings";
 import { settings } from "../../config/settings";
