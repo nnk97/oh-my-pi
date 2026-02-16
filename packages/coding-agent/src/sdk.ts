@@ -1,13 +1,14 @@
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { type Message, type Model, supportsXhigh } from "@oh-my-pi/pi-ai";
+import { prewarmOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { $env, logger, postmortem } from "@oh-my-pi/pi-utils";
-import { getAgentDbPath, getAgentDir } from "@oh-my-pi/pi-utils/dirs";
+import { getAgentDbPath, getAgentDir, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import chalk from "chalk";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability } from "./capability/rule";
 import { ModelRegistry } from "./config/model-registry";
-import { formatModelString, parseModelString } from "./config/model-resolver";
+import { formatModelString, parseModelPattern, parseModelString } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
@@ -45,6 +46,7 @@ import {
 } from "./internal-urls";
 import { disposeAllKernelSessions } from "./ipy/executor";
 import { discoverAndLoadMCPTools, type MCPManager, type MCPToolsLoadResult } from "./mcp";
+import { buildMemoryToolDeveloperInstructions, startMemoryStartupTask } from "./memories";
 import { AgentSession } from "./session/agent-session";
 import { AuthStorage } from "./session/auth-storage";
 import { convertToLlm } from "./session/messages";
@@ -85,7 +87,7 @@ const debugStartup = $env.PI_DEBUG_STARTUP ? (stage: string) => process.stderr.w
 
 // Types
 export interface CreateAgentSessionOptions {
-	/** Working directory for project-local discovery. Default: process.cwd() */
+	/** Working directory for project-local discovery. Default: getProjectDir() */
 	cwd?: string;
 	/** Global config directory. Default: ~/.omp/agent */
 	agentDir?: string;
@@ -99,6 +101,9 @@ export interface CreateAgentSessionOptions {
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model;
+	/** Raw model pattern string (e.g. from --model CLI flag) to resolve after extensions load.
+	 * Used when model lookup is deferred because extension-provided models aren't registered yet. */
+	modelPattern?: string;
 	/** Thinking level. Default: from settings, else 'off' (clamped to model capabilities) */
 	thinkingLevel?: ThinkingLevel;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
@@ -240,7 +245,7 @@ export async function discoverAuthStorage(agentDir: string = getDefaultAgentDir(
  * Discover extensions from cwd.
  */
 export async function discoverExtensions(cwd?: string): Promise<LoadExtensionsResult> {
-	const resolvedCwd = cwd ?? process.cwd();
+	const resolvedCwd = cwd ?? getProjectDir();
 
 	return discoverAndLoadExtensions([], resolvedCwd);
 }
@@ -255,7 +260,7 @@ export async function discoverSkills(
 ): Promise<{ skills: Skill[]; warnings: SkillWarning[] }> {
 	return await loadSkillsInternal({
 		...settings,
-		cwd: cwd ?? process.cwd(),
+		cwd: cwd ?? getProjectDir(),
 	});
 }
 
@@ -268,7 +273,7 @@ export async function discoverContextFiles(
 	_agentDir?: string,
 ): Promise<Array<{ path: string; content: string; depth?: number }>> {
 	return await loadContextFilesInternal({
-		cwd: cwd ?? process.cwd(),
+		cwd: cwd ?? getProjectDir(),
 	});
 }
 
@@ -277,7 +282,7 @@ export async function discoverContextFiles(
  */
 export async function discoverPromptTemplates(cwd?: string, agentDir?: string): Promise<PromptTemplate[]> {
 	return await loadPromptTemplatesInternal({
-		cwd: cwd ?? process.cwd(),
+		cwd: cwd ?? getProjectDir(),
 		agentDir: agentDir ?? getDefaultAgentDir(),
 	});
 }
@@ -286,14 +291,14 @@ export async function discoverPromptTemplates(cwd?: string, agentDir?: string): 
  * Discover file-based slash commands from commands/ directories.
  */
 export async function discoverSlashCommands(cwd?: string): Promise<FileSlashCommand[]> {
-	return loadSlashCommandsInternal({ cwd: cwd ?? process.cwd() });
+	return loadSlashCommandsInternal({ cwd: cwd ?? getProjectDir() });
 }
 
 /**
  * Discover custom commands (TypeScript slash commands) from cwd and agentDir.
  */
 export async function discoverCustomTSCommands(cwd?: string, agentDir?: string): Promise<CustomCommandsLoadResult> {
-	const resolvedCwd = cwd ?? process.cwd();
+	const resolvedCwd = cwd ?? getProjectDir();
 	const resolvedAgentDir = agentDir ?? getDefaultAgentDir();
 
 	return loadCustomCommandsInternal({
@@ -307,7 +312,7 @@ export async function discoverCustomTSCommands(cwd?: string, agentDir?: string):
  * Returns the manager and loaded tools.
  */
 export async function discoverMCPServers(cwd?: string): Promise<MCPToolsLoadResult> {
-	const resolvedCwd = cwd ?? process.cwd();
+	const resolvedCwd = cwd ?? getProjectDir();
 	return discoverAndLoadMCPTools(resolvedCwd);
 }
 
@@ -321,6 +326,7 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	cwd?: string;
 	appendPrompt?: string;
+	repeatToolDescriptions?: boolean;
 }
 
 /**
@@ -332,6 +338,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		skills: options.skills,
 		contextFiles: options.contextFiles,
 		appendSystemPrompt: options.appendPrompt,
+		repeatToolDescriptions: options.repeatToolDescriptions,
 	});
 }
 
@@ -439,6 +446,58 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 		api.on("session_shutdown", async (_event, ctx) =>
 			runOnSession({ reason: "shutdown", previousSessionFile: undefined }, ctx),
 		);
+		api.on("auto_compaction_start", async (event, ctx) =>
+			runOnSession({ reason: "auto_compaction_start", trigger: event.reason }, ctx),
+		);
+		api.on("auto_compaction_end", async (event, ctx) =>
+			runOnSession(
+				{
+					reason: "auto_compaction_end",
+					result: event.result,
+					aborted: event.aborted,
+					willRetry: event.willRetry,
+					errorMessage: event.errorMessage,
+				},
+				ctx,
+			),
+		);
+		api.on("auto_retry_start", async (event, ctx) =>
+			runOnSession(
+				{
+					reason: "auto_retry_start",
+					attempt: event.attempt,
+					maxAttempts: event.maxAttempts,
+					delayMs: event.delayMs,
+					errorMessage: event.errorMessage,
+				},
+				ctx,
+			),
+		);
+		api.on("auto_retry_end", async (event, ctx) =>
+			runOnSession(
+				{
+					reason: "auto_retry_end",
+					success: event.success,
+					attempt: event.attempt,
+					finalError: event.finalError,
+				},
+				ctx,
+			),
+		);
+		api.on("ttsr_triggered", async (event, ctx) =>
+			runOnSession({ reason: "ttsr_triggered", rules: event.rules }, ctx),
+		);
+		api.on("todo_reminder", async (event, ctx) =>
+			runOnSession(
+				{
+					reason: "todo_reminder",
+					todos: event.todos,
+					attempt: event.attempt,
+					maxAttempts: event.maxAttempts,
+				},
+				ctx,
+			),
+		);
 	};
 }
 
@@ -469,7 +528,7 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
  *   model: myModel,
  *   getApiKey: async () => Bun.env.MY_KEY,
  *   systemPrompt: 'You are helpful.',
- *   tools: codingTools({ cwd: process.cwd() }),
+ *   tools: codingTools({ cwd: getProjectDir() }),
  *   skills: [],
  *   sessionManager: SessionManager.inMemory(),
  * });
@@ -477,7 +536,7 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	debugStartup("sdk:createAgentSession:entry");
-	const cwd = options.cwd ?? process.cwd();
+	const cwd = options.cwd ?? getProjectDir();
 	const agentDir = options.agentDir ?? getDefaultAgentDir();
 	const eventBus = options.eventBus ?? new EventBus();
 
@@ -494,6 +553,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	time("settings");
 	initializeWithSettings(settings);
 	time("initializeWithSettings");
+	const skillsSettings = settings.getGroup("skills") as SkillsSettings;
+	const discoveredSkillsPromise =
+		options.skills === undefined ? discoverSkills(cwd, agentDir, skillsSettings) : undefined;
 
 	// Initialize provider preferences from settings
 	setPreferredSearchProvider(settings.get("providers.webSearch") ?? "auto");
@@ -502,6 +564,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd);
 	time("sessionManager");
 	const sessionId = sessionManager.getSessionId();
+	const modelApiKeyAvailability = new Map<string, boolean>();
+	const getModelAvailabilityKey = (candidate: Model): string =>
+		`${candidate.provider}\u0000${candidate.baseUrl ?? ""}`;
+	const hasModelApiKey = async (candidate: Model): Promise<boolean> => {
+		const availabilityKey = getModelAvailabilityKey(candidate);
+		const cached = modelApiKeyAvailability.get(availabilityKey);
+		if (cached !== undefined) {
+			return cached;
+		}
+
+		const hasKey = !!(await modelRegistry.getApiKey(candidate, sessionId));
+		modelApiKeyAvailability.set(availabilityKey, hasKey);
+		return hasKey;
+	};
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
@@ -509,17 +585,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const hasExistingSession = existingSession.messages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
 
-	const hasExplicitModel = options.model !== undefined;
+	const hasExplicitModel = options.model !== undefined || options.modelPattern !== undefined;
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
-
-	// If session has data, try to restore model from it
+	// If session has data, try to restore model from it.
+	// Skip restore when an explicit model was requested.
 	const defaultModelStr = existingSession.models.default;
-	if (!model && hasExistingSession && defaultModelStr) {
+	if (!hasExplicitModel && !model && hasExistingSession && defaultModelStr) {
 		const parsedModel = parseModelString(defaultModelStr);
 		if (parsedModel) {
 			const restoredModel = modelRegistry.find(parsedModel.provider, parsedModel.id);
-			if (restoredModel && (await modelRegistry.getApiKey(restoredModel, sessionId))) {
+			if (restoredModel && (await hasModelApiKey(restoredModel))) {
 				model = restoredModel;
 			}
 		}
@@ -528,36 +604,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 	}
 
-	// If still no model, try settings default
-	if (!model) {
+	// If still no model, try settings default.
+	// Skip settings fallback when an explicit model was requested.
+	if (!hasExplicitModel && !model) {
 		const settingsDefaultModel = settings.getModelRole("default");
 		if (settingsDefaultModel) {
 			const parsedModel = parseModelString(settingsDefaultModel);
 			if (parsedModel) {
 				const settingsModel = modelRegistry.find(parsedModel.provider, parsedModel.id);
-				if (settingsModel && (await modelRegistry.getApiKey(settingsModel, sessionId))) {
+				if (settingsModel && (await hasModelApiKey(settingsModel))) {
 					model = settingsModel;
 				}
 			}
-		}
-	}
-
-	// Fall back to first available model with a valid API key
-	if (!model) {
-		const allModels = modelRegistry.getAll();
-		const keyResults = await Promise.all(
-			allModels.map(async m => ({ model: m, hasKey: !!(await modelRegistry.getApiKey(m, sessionId)) })),
-		);
-		model = keyResults.find(r => r.hasKey)?.model;
-		time("findAvailableModel");
-		if (model) {
-			if (modelFallbackMessage) {
-				modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
-			}
-		} else {
-			// No models available - set message so user knows to /login or configure keys
-			modelFallbackMessage =
-				"No models available. Use /login or set an API key environment variable. Then use /model to select a model.";
 		}
 	}
 
@@ -602,12 +660,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		skills = options.skills;
 		skillWarnings = [];
 	} else {
-		const skillsSettings = settings.getGroup("skills") as SkillsSettings;
-		const discovered = await discoverSkills(cwd, agentDir, skillsSettings);
+		const discovered = discoveredSkillsPromise ? await discoveredSkillsPromise : { skills: [], warnings: [] };
+		time("discoverSkills");
 		skills = discovered.skills;
 		skillWarnings = discovered.warnings;
 	}
-	time("discoverSkills");
+
 	debugStartup("sdk:discoverSkills");
 
 	// Discover rules
@@ -822,6 +880,58 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 	}
 
+	// Process provider registrations queued during extension loading.
+	// This must happen before the runner is created so that models registered by
+	// extensions are available for model selection on session resume / fallback.
+	const activeExtensionSources = extensionsResult.extensions.map(extension => extension.path);
+	modelRegistry.syncExtensionSources(activeExtensionSources);
+	for (const sourceId of new Set(activeExtensionSources)) {
+		modelRegistry.clearSourceRegistrations(sourceId);
+	}
+	if (extensionsResult.runtime.pendingProviderRegistrations.length > 0) {
+		for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
+			modelRegistry.registerProvider(name, config, sourceId);
+		}
+		extensionsResult.runtime.pendingProviderRegistrations = [];
+	}
+
+	// Resolve deferred --model pattern now that extension models are registered.
+	if (!model && options.modelPattern) {
+		const availableModels = modelRegistry.getAll();
+		const matchPreferences = {
+			usageOrder: settings.getStorage()?.getModelUsageOrder(),
+		};
+		const { model: resolved } = parseModelPattern(options.modelPattern, availableModels, matchPreferences);
+		if (resolved) {
+			model = resolved;
+			modelFallbackMessage = undefined;
+		} else {
+			modelFallbackMessage = `Model "${options.modelPattern}" not found`;
+		}
+	}
+
+	// Fall back to first available model with a valid API key.
+	// Skip fallback if the user explicitly requested a model via --model that wasn't found.
+	if (!model && !options.modelPattern) {
+		const allModels = modelRegistry.getAll();
+		for (const candidate of allModels) {
+			if (await hasModelApiKey(candidate)) {
+				model = candidate;
+				break;
+			}
+		}
+		time("findAvailableModel");
+		if (model) {
+			if (modelFallbackMessage) {
+				modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
+			}
+		} else {
+			modelFallbackMessage =
+				"No models available. Use /login or set an API key environment variable. Then use /model to select a model.";
+		}
+	}
+
+	time("findModel");
 	// Discover custom commands (TypeScript slash commands)
 	const customCommandsResult: CustomCommandsLoadResult = options.disableExtensionDiscovery
 		? { commands: [], errors: [] }
@@ -911,8 +1021,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		emitEvent: event => cursorEventEmitter?.(event),
 	});
 
+	const repeatToolDescriptions = settings.get("repeatToolDescriptions");
 	const rebuildSystemPrompt = async (toolNames: string[], tools: Map<string, AgentTool>): Promise<string> => {
 		toolContextStore.setToolNames(toolNames);
+		const memoryInstructions = await buildMemoryToolDeveloperInstructions(agentDir, settings);
 		const defaultPrompt = await buildSystemPromptInternal({
 			cwd,
 			skills,
@@ -922,6 +1034,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			toolNames,
 			rules: rulebookRules,
 			skillsSettings: settings.getGroup("skills") as SkillsSettings,
+			appendSystemPrompt: memoryInstructions,
+			repeatToolDescriptions,
 		});
 
 		if (options.systemPrompt === undefined) {
@@ -938,6 +1052,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				rules: rulebookRules,
 				skillsSettings: settings.getGroup("skills") as SkillsSettings,
 				customPrompt: options.systemPrompt,
+				appendSystemPrompt: memoryInstructions,
+				repeatToolDescriptions,
 			});
 		}
 		return options.systemPrompt(defaultPrompt);
@@ -1016,6 +1132,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		.map(name => toolRegistry.get(name))
 		.filter((tool): tool is AgentTool => tool !== undefined);
 
+	const openaiWebsocketSetting = settings.get("providers.openaiWebsockets") ?? "auto";
+	const preferOpenAICodexWebsockets =
+		openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
+
 	agent = new Agent({
 		initialState: {
 			systemPrompt,
@@ -1036,6 +1156,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingBudgets: settings.getGroup("thinkingBudgets"),
 		temperature: settings.get("temperature") >= 0 ? settings.get("temperature") : undefined,
 		kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
+		preferWebsockets: preferOpenAICodexWebsockets,
 		getToolContext: tc => toolContextStore.getContext(tc),
 		getApiKey: async provider => {
 			// Use the provider argument from the in-flight request;
@@ -1087,6 +1208,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	debugStartup("sdk:createAgentSession");
 	time("createAgentSession");
 
+	if (model?.api === "openai-codex-responses") {
+		try {
+			debugStartup("sdk:prewarmCodexWebsocket:start");
+			await prewarmOpenAICodexResponses(model, {
+				apiKey: await modelRegistry.getApiKey(model, sessionId),
+				sessionId,
+				preferWebsockets: preferOpenAICodexWebsockets,
+				providerSessionState: session.providerSessionState,
+			});
+			debugStartup("sdk:prewarmCodexWebsocket:done");
+			time("prewarmCodexWebsocket");
+		} catch (error) {
+			logger.debug("Codex websocket prewarm failed", {
+				error: error instanceof Error ? error.message : String(error),
+				provider: model.provider,
+				model: model.id,
+			});
+		}
+	}
+
 	// Warm up LSP servers (connects to detected servers)
 	let lspServers: CreateAgentSessionResult["lspServers"];
 	if (enableLsp && settings.get("lsp.diagnosticsOnWrite")) {
@@ -1106,6 +1247,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			logger.warn("LSP server warmup failed", { cwd, error: String(error) });
 		}
 	}
+
+	startMemoryStartupTask({
+		session,
+		settings,
+		modelRegistry,
+		agentDir,
+		taskDepth,
+	});
 
 	debugStartup("sdk:return");
 	return {

@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use napi::{
 	bindgen_prelude::*,
 	threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -25,7 +25,7 @@ use napi_derive::napi;
 
 // Re-export entry types so existing `glob::FileType` / `glob::GlobMatch` paths still work.
 pub use crate::fs_cache::{FileType, GlobMatch};
-use crate::{fs_cache, task};
+use crate::{fs_cache, glob_util, task};
 
 /// Input options for `glob`, including traversal, filtering, and cancellation.
 #[napi(object)]
@@ -34,9 +34,12 @@ pub struct GlobOptions<'env> {
 	pub pattern:              String,
 	/// Directory to search.
 	pub path:                 String,
-	/// Filter by file type: "file", "dir", or "symlink".
+	/// Filter by file type: "file", "dir", or "symlink". Symlinks are
+	/// matched for file/dir filters based on their target type.
 	#[napi(js_name = "fileType")]
 	pub file_type:            Option<FileType>,
+	/// Match simple patterns recursively by default (`*.ts` -> recursive).
+	pub recursive:            Option<bool>,
 	/// Include hidden files (default: false).
 	pub hidden:               Option<bool>,
 	/// Maximum number of results to return.
@@ -69,34 +72,11 @@ pub struct GlobResult {
 	pub total_matches: u32,
 }
 
-fn build_glob_pattern(glob: &str) -> String {
-	let normalized = if cfg!(windows) && glob.contains('\\') {
-		std::borrow::Cow::Owned(glob.replace('\\', "/"))
-	} else {
-		std::borrow::Cow::Borrowed(glob)
-	};
-	if normalized.contains('/') || normalized.starts_with("**") {
-		normalized.into_owned()
-	} else {
-		format!("**/{normalized}")
-	}
-}
-
-fn compile_glob(glob: &str) -> Result<GlobSet> {
-	let mut builder = GlobSetBuilder::new();
-	let pattern = build_glob_pattern(glob);
-	let glob = Glob::new(&pattern)
-		.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
-	builder.add(glob);
-	builder
-		.build()
-		.map_err(|err| Error::from_reason(format!("Failed to build glob matcher: {err}")))
-}
-
 /// Internal runtime config for a single glob execution.
 struct GlobConfig {
 	root:                  std::path::PathBuf,
 	pattern:               String,
+	recursive:             bool,
 	include_hidden:        bool,
 	file_type_filter:      Option<FileType>,
 	max_results:           usize,
@@ -104,6 +84,41 @@ struct GlobConfig {
 	mentions_node_modules: bool,
 	sort_by_mtime:         bool,
 	use_cache:             bool,
+}
+
+fn resolve_symlink_target_type(root: &Path, relative_path: &str) -> Option<FileType> {
+	let target_path = root.join(relative_path);
+	let metadata = std::fs::metadata(target_path).ok()?;
+	if metadata.is_dir() {
+		Some(FileType::Dir)
+	} else if metadata.is_file() {
+		Some(FileType::File)
+	} else {
+		None
+	}
+}
+
+fn apply_file_type_filter(entry: &GlobMatch, config: &GlobConfig) -> Option<FileType> {
+	let Some(filter) = config.file_type_filter else {
+		return Some(entry.file_type);
+	};
+	if entry.file_type == filter {
+		return Some(entry.file_type);
+	}
+	if entry.file_type != FileType::Symlink {
+		return None;
+	}
+	match filter {
+		FileType::File | FileType::Dir => {
+			let resolved = resolve_symlink_target_type(&config.root, &entry.path)?;
+			if resolved == filter {
+				Some(resolved)
+			} else {
+				None
+			}
+		},
+		FileType::Symlink => None,
+	}
 }
 
 /// Filter and collect matching entries from a pre-scanned list.
@@ -128,17 +143,16 @@ fn filter_entries(
 		if !glob_set.is_match(&entry.path) {
 			continue;
 		}
-		if config
-			.file_type_filter
-			.is_some_and(|filter| filter != entry.file_type)
-		{
+		let Some(effective_file_type) = apply_file_type_filter(entry, config) else {
 			continue;
-		}
+		};
+		let mut matched_entry = entry.clone();
+		matched_entry.file_type = effective_file_type;
 		if let Some(callback) = on_match {
-			callback.call(Ok(entry.clone()), ThreadsafeFunctionCallMode::NonBlocking);
+			callback.call(Ok(matched_entry.clone()), ThreadsafeFunctionCallMode::NonBlocking);
 		}
 
-		matches.push(entry.clone());
+		matches.push(matched_entry);
 		// Only early-break when not sorting; mtime sort requires full candidate set.
 		if !config.sort_by_mtime && matches.len() >= config.max_results {
 			break;
@@ -154,7 +168,7 @@ fn run_glob(
 	on_match: Option<&ThreadsafeFunction<GlobMatch>>,
 	ct: task::CancelToken,
 ) -> Result<GlobResult> {
-	let glob_set = compile_glob(&config.pattern)?;
+	let glob_set = glob_util::compile_glob(&config.pattern, config.recursive)?;
 	if config.max_results == 0 {
 		return Ok(GlobResult { matches: Vec::new(), total_matches: 0 });
 	}
@@ -225,6 +239,7 @@ pub fn glob(
 		pattern,
 		path,
 		file_type,
+		recursive,
 		hidden,
 		max_results,
 		gitignore,
@@ -247,6 +262,7 @@ pub fn glob(
 				root: fs_cache::resolve_search_path(&path)?,
 				include_hidden: hidden.unwrap_or(false),
 				file_type_filter: file_type,
+				recursive: recursive.unwrap_or(true),
 				max_results: max_results.map_or(usize::MAX, |value| value as usize),
 				use_gitignore: gitignore.unwrap_or(true),
 				mentions_node_modules: include_node_modules

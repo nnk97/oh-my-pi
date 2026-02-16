@@ -8,10 +8,22 @@
  * - Interact with the user via UI primitives
  */
 import type { AgentMessage, AgentToolResult, AgentToolUpdateCallback, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, Model, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type {
+	Api,
+	AssistantMessageEventStream,
+	Context,
+	ImageContent,
+	Model,
+	OAuthCredentials,
+	OAuthLoginCallbacks,
+	SimpleStreamOptions,
+	TextContent,
+	ToolResultMessage,
+} from "@oh-my-pi/pi-ai";
 import type * as piCodingAgent from "@oh-my-pi/pi-coding-agent";
 import type { AutocompleteItem, Component, EditorComponent, EditorTheme, KeyId, TUI } from "@oh-my-pi/pi-tui";
 import type { Static, TSchema } from "@sinclair/typebox";
+import type { Rule } from "../../capability/rule";
 import type { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { BashResult } from "../../exec/bash-executor";
@@ -39,6 +51,7 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../../tools";
+import type { TodoItem } from "../../tools/todo-write";
 import type { EventBus } from "../../utils/event-bus";
 import type { SlashCommandInfo } from "../slash-commands";
 
@@ -459,6 +472,52 @@ export interface TurnEndEvent {
 	toolResults: ToolResultMessage[];
 }
 
+/** Fired when auto-compaction starts */
+export interface AutoCompactionStartEvent {
+	type: "auto_compaction_start";
+	reason: "threshold" | "overflow";
+}
+
+/** Fired when auto-compaction ends */
+export interface AutoCompactionEndEvent {
+	type: "auto_compaction_end";
+	result: CompactionResult | undefined;
+	aborted: boolean;
+	willRetry: boolean;
+	errorMessage?: string;
+}
+
+/** Fired when auto-retry starts */
+export interface AutoRetryStartEvent {
+	type: "auto_retry_start";
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	errorMessage: string;
+}
+
+/** Fired when auto-retry ends */
+export interface AutoRetryEndEvent {
+	type: "auto_retry_end";
+	success: boolean;
+	attempt: number;
+	finalError?: string;
+}
+
+/** Fired when TTSR rule matching interrupts generation */
+export interface TtsrTriggeredEvent {
+	type: "ttsr_triggered";
+	rules: Rule[];
+}
+
+/** Fired when todo reminder logic detects unfinished todos */
+export interface TodoReminderEvent {
+	type: "todo_reminder";
+	todos: TodoItem[];
+	attempt: number;
+	maxAttempts: number;
+}
+
 // ============================================================================
 // User Bash Events
 // ============================================================================
@@ -652,6 +711,12 @@ export type ExtensionEvent =
 	| AgentEndEvent
 	| TurnStartEvent
 	| TurnEndEvent
+	| AutoCompactionStartEvent
+	| AutoCompactionEndEvent
+	| AutoRetryStartEvent
+	| AutoRetryEndEvent
+	| TtsrTriggeredEvent
+	| TodoReminderEvent
 	| UserBashEvent
 	| UserPythonEvent
 	| InputEvent
@@ -814,6 +879,12 @@ export interface ExtensionAPI {
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
+	on(event: "auto_compaction_start", handler: ExtensionHandler<AutoCompactionStartEvent>): void;
+	on(event: "auto_compaction_end", handler: ExtensionHandler<AutoCompactionEndEvent>): void;
+	on(event: "auto_retry_start", handler: ExtensionHandler<AutoRetryStartEvent>): void;
+	on(event: "auto_retry_end", handler: ExtensionHandler<AutoRetryEndEvent>): void;
+	on(event: "ttsr_triggered", handler: ExtensionHandler<TtsrTriggeredEvent>): void;
+	on(event: "todo_reminder", handler: ExtensionHandler<TodoReminderEvent>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
@@ -916,8 +987,106 @@ export interface ExtensionAPI {
 	/** Set thinking level (clamped to model capabilities). */
 	setThinkingLevel(level: ThinkingLevel): void;
 
+	// =========================================================================
+	// Provider Registration
+	// =========================================================================
+
+	/**
+	 * Register or override a model provider.
+	 *
+	 * If `models` is provided: replaces all existing models for this provider.
+	 * If only `baseUrl` is provided: overrides the URL for existing models.
+	 * If `streamSimple` is provided: registers a custom API stream handler.
+	 *
+	 * @example
+	 * // Register a new provider with custom models and streaming
+	 * pi.registerProvider("google-vertex-claude", {
+	 *   baseUrl: "https://us-east5-aiplatform.googleapis.com",
+	 *   apiKey: "GOOGLE_CLOUD_PROJECT",
+	 *   api: "vertex-claude-api",
+	 *   streamSimple: myStreamFunction,
+	 *   models: [
+	 *     {
+	 *       id: "claude-sonnet-4@20250514",
+	 *       name: "Claude Sonnet 4 (Vertex)",
+	 *       reasoning: true,
+	 *       input: ["text", "image"],
+	 *       cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+	 *       contextWindow: 200000,
+	 *       maxTokens: 64000,
+	 *     }
+	 *   ]
+	 * });
+	 *
+	 * @example
+	 * // Override baseUrl for an existing provider
+	 * pi.registerProvider("anthropic", {
+	 *   baseUrl: "https://proxy.example.com"
+	 * });
+	 */
+	registerProvider(name: string, config: ProviderConfig): void;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
+}
+
+// ============================================================================
+// Provider Registration Types
+// ============================================================================
+
+/** Configuration for registering a provider via pi.registerProvider(). */
+export interface ProviderConfig {
+	/** Base URL for the API endpoint. Required when defining models. */
+	baseUrl?: string;
+	/** API key or environment variable name. Required when defining models unless oauth is provided. */
+	apiKey?: string;
+	/** API type identifier. Required when registering streamSimple or when models don't specify one. */
+	api?: Api;
+	/** Custom streaming function for non-built-in APIs. */
+	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+	/** Custom headers to include in requests. */
+	headers?: Record<string, string>;
+	/** If true, adds Authorization: Bearer header with the resolved API key. */
+	authHeader?: boolean;
+	/** Models to register. If provided, replaces all existing models for this provider. */
+	models?: ProviderModelConfig[];
+	/** OAuth provider for /login support. */
+	oauth?: {
+		/** Display name in login UI. */
+		name: string;
+		/** Run the provider login flow and return credentials (or a plain API key) to persist. */
+		login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials | string>;
+		/** Refresh expired credentials. */
+		refreshToken?(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+		/** Convert credentials to an API key string for requests. */
+		getApiKey?(credentials: OAuthCredentials): string;
+		/** Optional model rewrite hook for credential-aware routing (e.g., enterprise URLs). */
+		modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
+	};
+}
+
+/** Configuration for a model within a provider. */
+export interface ProviderModelConfig {
+	/** Model ID (e.g., "claude-sonnet-4@20250514"). */
+	id: string;
+	/** Display name (e.g., "Claude Sonnet 4 (Vertex)"). */
+	name: string;
+	/** API type override for this model. */
+	api?: Api;
+	/** Whether the model supports extended thinking. */
+	reasoning: boolean;
+	/** Supported input types. */
+	input: ("text" | "image")[];
+	/** Cost per million tokens. */
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	/** Maximum context window size in tokens. */
+	contextWindow: number;
+	/** Maximum output tokens. */
+	maxTokens: number;
+	/** Custom headers for this model. */
+	headers?: Record<string, string>;
+	/** OpenAI compatibility settings. */
+	compat?: Model<Api>["compat"];
 }
 
 /** Extension factory function type. Supports both sync and async initialization. */
@@ -978,6 +1147,8 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) 
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
+	/** Provider registrations queued during extension loading, processed during session initialization */
+	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;
 }
 
 /** Action implementations for ExtensionAPI methods. */

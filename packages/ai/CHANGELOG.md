@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+## [12.6.0] - 2026-02-16
+
+### Added
+
+- Added source-scoped custom API and OAuth provider registration helpers for extension-defined providers.
+
+### Changed
+
+- Expanded `Api` typing to allow extension-defined API identifiers while preserving built-in API exhaustiveness checks.
+
+### Fixed
+
+- Fixed custom API registration to reject built-in API identifiers and prevent accidental provider overrides.
+
+## [12.2.0] - 2026-02-13
+
+### Added
+
+- Added automatic retry logic for WebSocket stream closures before response completion, with configurable retry budget to improve reliability on flaky connections
+- Added `providerSessionState` option to enable provider-scoped mutable state persistence across agent turns
+- Added WebSocket retry logic with configurable retry budget and delay via `PI_CODEX_WEBSOCKET_RETRY_BUDGET` and `PI_CODEX_WEBSOCKET_RETRY_DELAY_MS` environment variables
+- Added WebSocket idle timeout detection via `PI_CODEX_WEBSOCKET_IDLE_TIMEOUT_MS` environment variable to fail stalled connections
+- Added WebSocket v2 beta header support via `PI_CODEX_WEBSOCKET_V2` environment variable for newer OpenAI API versions
+- Added WebSocket handshake header capture to extract and replay session metadata (turn state, models etag, reasoning flags) across SSE fallback requests
+- Added `preferWebsockets` option to enable WebSocket transport for OpenAI Codex responses when supported
+- Added `prewarmOpenAICodexResponses()` function to establish and reuse WebSocket connections across multiple requests
+- Added `getOpenAICodexTransportDetails()` function to inspect transport layer details including WebSocket status and fallback information
+- Added `getProviderDetails()` function to retrieve formatted provider configuration and transport information
+- Added automatic fallback from WebSocket to SSE when connection fails, with transparent retry logic
+- Added session state management to reuse WebSocket connections and enable request appending across turns
+- Added support for x-codex-turn-state header to maintain conversation state across SSE requests
+
+### Changed
+
+- Changed WebSocket session state storage from global maps to provider-scoped session state for multi-agent isolation
+- Changed WebSocket connection initialization to accept idle timeout configuration and handshake header callbacks
+- Changed WebSocket error handling to use standardized transport error messages with `Codex websocket transport error` prefix
+- Changed WebSocket retry behavior to retry transient failures before activating sticky fallback, improving reliability on flaky connections
+- Changed OpenAI Codex model configuration to prefer WebSocket transport by default with `preferWebsockets: true`
+- Changed header handling to use appropriate OpenAI-Beta header values for WebSocket vs SSE transports
+- Perplexity OAuth token refresh now uses JWT expiry extraction instead of Socket.IO RPC, improving reliability when server is unreachable
+- Removed Socket.IO client implementation for Perplexity token refresh; tokens are now validated using embedded JWT expiry claims
+
+### Removed
+
+- Removed `refreshPerplexityToken` export; token refresh is now handled internally via JWT expiry detection
+
+### Fixed
+
+- Fixed WebSocket stream retry logic to properly handle mid-stream connection closures and retry before falling back to SSE transport
+- Fixed `preferWebsockets` option handling to correctly respect explicit `false` values when determining transport preference
+- Fixed WebSocket append state not being reset after aborted requests, preventing stale state from affecting subsequent turns
+- Fixed WebSocket append state not being reset after stream errors, preventing failed append attempts from blocking future requests
+- Fixed Codex model context window metadata to use 272000 input tokens (instead of 400000 total budget) for non-Spark Codex variants
+
 ## [12.0.0] - 2026-02-12
 
 ### Added

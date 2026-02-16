@@ -1,22 +1,31 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
+import {
+	getEnvApiKey,
+	getProviderDetails,
+	type ProviderDetails,
+	type UsageLimit,
+	type UsageReport,
+} from "@oh-my-pi/pi-ai";
 import { copyToClipboard } from "@oh-my-pi/pi-natives";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { Snowflake } from "@oh-my-pi/pi-utils";
+import { setProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { $ } from "bun";
 import { reset as resetCapabilities } from "../../capability";
 import { settings } from "../../config/settings";
 import { loadCustomShare } from "../../export/custom-share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import { getGatewayStatus } from "../../ipy/gateway-coordinator";
+import { buildMemoryToolDeveloperInstructions, clearMemoryData, enqueueMemoryConsolidation } from "../../memories";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { PythonExecutionComponent } from "../../modes/components/python-execution";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import type { AuthStorage } from "../../session/auth-storage";
 import { createCompactionSummaryMessage } from "../../session/messages";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd } from "../../tools/path-utils";
@@ -245,6 +254,25 @@ export class CommandController {
 		let info = `${theme.bold("Session Info")}\n\n`;
 		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
 		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n\n`;
+		info += `\n${theme.bold("Provider")}\n`;
+		const model = this.ctx.session.model;
+		if (!model) {
+			info += `${theme.fg("dim", "No model selected")}\n`;
+		} else {
+			const authMode = resolveProviderAuthMode(this.ctx.session.modelRegistry.authStorage, model.provider);
+			const openaiWebsocketSetting = this.ctx.settings.get("providers.openaiWebsockets") ?? "auto";
+			const preferOpenAICodexWebsockets =
+				openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
+			const providerDetails = getProviderDetails({
+				model,
+				sessionId: stats.sessionId,
+				authMode,
+				preferWebsockets: preferOpenAICodexWebsockets,
+				providerSessionState: this.ctx.session.providerSessionState,
+			});
+			info += renderProviderSection(providerDetails, theme);
+		}
+		info += `\n`;
 		info += `${theme.bold("Messages")}\n`;
 		info += `${theme.fg("dim", "User:")} ${stats.userMessages}\n`;
 		info += `${theme.fg("dim", "Assistant:")} ${stats.assistantMessages}\n`;
@@ -369,6 +397,7 @@ export class CommandController {
 	handleHotkeysCommand(): void {
 		const expandToolsKey = this.ctx.keybindings.getDisplayString("expandTools") || "Ctrl+O";
 		const planModeKey = this.ctx.keybindings.getDisplayString("togglePlanMode") || "Alt+Shift+P";
+		const sttKey = this.ctx.keybindings.getDisplayString("toggleSTT") || "Alt+H";
 		const hotkeys = `
 **Navigation**
 | Key | Action |
@@ -405,6 +434,7 @@ export class CommandController {
 | \`${expandToolsKey}\` | Toggle tool output expansion |
 | \`Ctrl+T\` | Toggle todo list expansion |
 | \`Ctrl+G\` | Edit message in external editor |
+| \`${sttKey}\` | Toggle speech-to-text recording |
 | \`/\` | Slash commands |
 | \`!\` | Run bash command |
 | \`!!\` | Run bash command (excluded from context) |
@@ -420,6 +450,51 @@ export class CommandController {
 		this.ctx.ui.requestRender();
 	}
 
+	async handleMemoryCommand(text: string): Promise<void> {
+		const argumentText = text.slice(7).trim();
+		const action = argumentText.split(/\s+/, 1)[0]?.toLowerCase() || "view";
+		const agentDir = this.ctx.settings.getAgentDir();
+
+		if (action === "view") {
+			const payload = await buildMemoryToolDeveloperInstructions(agentDir, this.ctx.settings);
+			if (!payload) {
+				this.ctx.showWarning("Memory payload is empty (memories disabled or no memory summary found).");
+				return;
+			}
+			this.ctx.chatContainer.addChild(new Spacer(1));
+			this.ctx.chatContainer.addChild(new DynamicBorder());
+			this.ctx.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "Memory Injection Payload")), 1, 0));
+			this.ctx.chatContainer.addChild(new Spacer(1));
+			this.ctx.chatContainer.addChild(new Markdown(payload, 1, 1, getMarkdownTheme()));
+			this.ctx.chatContainer.addChild(new DynamicBorder());
+			this.ctx.ui.requestRender();
+			return;
+		}
+
+		if (action === "reset" || action === "clear") {
+			try {
+				await clearMemoryData(agentDir, this.ctx.sessionManager.getCwd());
+				await this.ctx.session.refreshBaseSystemPrompt();
+				this.ctx.showStatus("Memory data cleared and system prompt refreshed.");
+			} catch (error) {
+				this.ctx.showError(`Memory clear failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return;
+		}
+
+		if (action === "enqueue" || action === "rebuild") {
+			try {
+				enqueueMemoryConsolidation(agentDir);
+				this.ctx.showStatus("Memory consolidation enqueued.");
+			} catch (error) {
+				this.ctx.showError(`Memory enqueue failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return;
+		}
+
+		this.ctx.showError("Usage: /memory <view|clear|reset|enqueue|rebuild>");
+	}
+
 	async handleClearCommand(): Promise<void> {
 		if (this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
@@ -427,6 +502,12 @@ export class CommandController {
 		}
 		this.ctx.statusContainer.clear();
 
+		if (this.ctx.session.isCompacting) {
+			this.ctx.session.abortCompaction();
+			while (this.ctx.session.isCompacting) {
+				await Bun.sleep(10);
+			}
+		}
 		await this.ctx.session.newSession();
 
 		this.ctx.statusLine.invalidate();
@@ -499,7 +580,7 @@ export class CommandController {
 		try {
 			await this.ctx.sessionManager.flush();
 			await this.ctx.sessionManager.moveTo(resolvedPath);
-			process.chdir(resolvedPath);
+			setProjectDir(resolvedPath);
 			resetCapabilities();
 			await this.ctx.refreshSlashCommandState(resolvedPath);
 
@@ -770,6 +851,31 @@ function formatDurationShort(ms: number): string {
 	if (hours > 0) return `${hours}h${mins > 0 ? ` ${mins}m` : ""}`;
 	if (minutes > 0) return `${minutes}m`;
 	return `${totalSeconds}s`;
+}
+
+function resolveProviderAuthMode(authStorage: AuthStorage, provider: string): string {
+	if (authStorage.hasOAuth(provider)) {
+		return "oauth";
+	}
+	if (authStorage.has(provider)) {
+		return "api key";
+	}
+	if (getEnvApiKey(provider)) {
+		return "env api key";
+	}
+	if (authStorage.hasAuth(provider)) {
+		return "runtime/fallback";
+	}
+	return "unknown";
+}
+
+export function renderProviderSection(details: ProviderDetails, uiTheme: Pick<typeof theme, "fg">): string {
+	const lines: string[] = [];
+	lines.push(`${uiTheme.fg("dim", "Name:")} ${details.provider}`);
+	for (const field of details.fields) {
+		lines.push(`${uiTheme.fg("dim", `${field.label}:`)} ${field.value}`);
+	}
+	return `${lines.join("\n")}\n`;
 }
 
 function resolveFraction(limit: UsageLimit): number | undefined {

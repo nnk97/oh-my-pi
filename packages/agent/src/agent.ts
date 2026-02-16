@@ -10,6 +10,7 @@ import {
 	type ImageContent,
 	type Message,
 	type Model,
+	type ProviderSessionState,
 	streamSimple,
 	type TextContent,
 	type ThinkingBudgets,
@@ -74,6 +75,9 @@ export interface AgentOptions {
 	 */
 	kimiApiFormat?: "openai" | "anthropic";
 
+	/** Hint that websocket transport should be preferred when supported by the provider implementation. */
+	preferWebsockets?: boolean;
+
 	/**
 	 * Custom stream function (for proxy backends, etc.). Default uses streamSimple.
 	 */
@@ -84,6 +88,10 @@ export interface AgentOptions {
 	 * Used by providers that support session-based caching (e.g., OpenAI Codex).
 	 */
 	sessionId?: string;
+	/**
+	 * Shared provider state map for session-scoped transport/session caches.
+	 */
+	providerSessionState?: Map<string, ProviderSessionState>;
 
 	/**
 	 * Resolves an API key dynamically for each LLM call.
@@ -159,6 +167,7 @@ export class Agent {
 	#followUpMode: "all" | "one-at-a-time";
 	#interruptMode: "immediate" | "wait";
 	#sessionId?: string;
+	#providerSessionState?: Map<string, ProviderSessionState>;
 	#thinkingBudgets?: ThinkingBudgets;
 	#temperature?: number;
 	#maxRetryDelayMs?: number;
@@ -168,6 +177,7 @@ export class Agent {
 	#runningPrompt?: Promise<void>;
 	#resolveRunningPrompt?: () => void;
 	#kimiApiFormat?: "openai" | "anthropic";
+	#preferWebsockets?: boolean;
 
 	/** Buffered Cursor tool results with text length at time of call (for correct ordering) */
 	#cursorToolResultBuffer: CursorToolResultEntry[] = [];
@@ -184,6 +194,7 @@ export class Agent {
 		this.#interruptMode = opts.interruptMode || "immediate";
 		this.streamFn = opts.streamFn || streamSimple;
 		this.#sessionId = opts.sessionId;
+		this.#providerSessionState = opts.providerSessionState;
 		this.#thinkingBudgets = opts.thinkingBudgets;
 		this.#temperature = opts.temperature;
 		this.#maxRetryDelayMs = opts.maxRetryDelayMs;
@@ -192,6 +203,7 @@ export class Agent {
 		this.#cursorExecHandlers = opts.cursorExecHandlers;
 		this.#cursorOnToolResult = opts.cursorOnToolResult;
 		this.#kimiApiFormat = opts.kimiApiFormat;
+		this.#preferWebsockets = opts.preferWebsockets;
 	}
 
 	/**
@@ -207,6 +219,20 @@ export class Agent {
 	 */
 	set sessionId(value: string | undefined) {
 		this.#sessionId = value;
+	}
+
+	/**
+	 * Get provider-scoped mutable session state store.
+	 */
+	get providerSessionState(): Map<string, ProviderSessionState> | undefined {
+		return this.#providerSessionState;
+	}
+
+	/**
+	 * Set provider-scoped mutable session state store.
+	 */
+	set providerSessionState(value: Map<string, ProviderSessionState> | undefined) {
+		this.#providerSessionState = value;
 	}
 
 	/**
@@ -588,9 +614,11 @@ export class Agent {
 			temperature: this.#temperature,
 			interruptMode: this.#interruptMode,
 			sessionId: this.#sessionId,
+			providerSessionState: this.#providerSessionState,
 			thinkingBudgets: this.#thinkingBudgets,
 			maxRetryDelayMs: this.#maxRetryDelayMs,
 			kimiApiFormat: this.#kimiApiFormat,
+			preferWebsockets: this.#preferWebsockets,
 			toolChoice: options?.toolChoice,
 			convertToLlm: this.#convertToLlm,
 			transformContext: this.#transformContext,

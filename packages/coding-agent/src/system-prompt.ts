@@ -3,8 +3,8 @@
  */
 import * as os from "node:os";
 import { getSystemInfo as getNativeSystemInfo, type SystemInfo } from "@oh-my-pi/pi-natives";
-import { $env, logger } from "@oh-my-pi/pi-utils";
-import { getGpuCachePath } from "@oh-my-pi/pi-utils/dirs";
+import { $env, hasFsCode, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { getGpuCachePath, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { $ } from "bun";
 import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
@@ -50,41 +50,54 @@ async function loadPreloadedSkillContents(preloadedSkills: Skill[]): Promise<Pre
  * Returns structured git data or null if not in a git repo.
  */
 export async function loadGitContext(cwd: string): Promise<GitContext | null> {
-	const git = (...args: string[]) =>
-		$`git ${args}`
-			.cwd(cwd)
-			.quiet()
-			.text()
-			.catch(() => null)
-			.then(text => text?.trim() ?? null);
+	const runGit = async (args: string[], timeoutMs = 1500): Promise<string | null> => {
+		const proc = Bun.spawn(["git", ...args], {
+			cwd,
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		const stdoutPromise = proc.stdout ? new Response(proc.stdout).text() : Promise.resolve("");
+		const race = await Promise.race([
+			proc.exited.then(() => "exited" as const),
+			Bun.sleep(timeoutMs).then(() => "timeout" as const),
+		]);
 
+		if (race === "timeout") {
+			proc.kill();
+			await stdoutPromise.catch(() => null);
+			logger.debug("Git context command timed out", { cwd, args, timeoutMs });
+			return null;
+		}
+
+		const exitCode = await proc.exited;
+		const stdout = await stdoutPromise.catch(() => "");
+		if (exitCode !== 0) return null;
+
+		const trimmed = stdout.trim();
+		return trimmed.length > 0 ? trimmed : "";
+	};
 	// Check if inside a git repo
-	const isGitRepo = await git("rev-parse", "--is-inside-work-tree");
+	const isGitRepo = await runGit(["rev-parse", "--is-inside-work-tree"]);
 	if (isGitRepo !== "true") return null;
-
-	// Get current branch
-	const currentBranch = await git("rev-parse", "--abbrev-ref", "HEAD");
+	const currentBranch = await runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
 	if (!currentBranch) return null;
-
-	// Detect main branch (check for 'main' first, then 'master')
 	let mainBranch = "main";
-	const mainExists = await git("rev-parse", "--verify", "main");
+	const mainExists = await runGit(["rev-parse", "--verify", "main"]);
 	if (mainExists === null) {
-		const masterExists = await git("rev-parse", "--verify", "master");
+		const masterExists = await runGit(["rev-parse", "--verify", "master"]);
 		if (masterExists !== null) mainBranch = "master";
 	}
 
-	// Get git status (porcelain format for parsing)
-	const status = (await git("status", "--porcelain")) || "(clean)";
-
-	// Get recent commits
-	const commits = (await git("log", "--oneline", "-5")) || "(no commits)";
+	const [status, commits] = await Promise.all([
+		runGit(["status", "--porcelain", "--untracked-files=no"], 2000),
+		runGit(["log", "--oneline", "-5"]),
+	]);
 	return {
 		isRepo: true,
 		currentBranch,
 		mainBranch,
-		status,
-		commits,
+		status: status === "" ? "(clean)" : (status ?? "(status unavailable)"),
+		commits: commits && commits.length > 0 ? commits : "(no commits)",
 	};
 }
 
@@ -333,23 +346,22 @@ async function getEnvironmentInfo(): Promise<Array<{ label: string; value: strin
 export async function resolvePromptInput(input: string | undefined, description: string): Promise<string | undefined> {
 	if (!input) {
 		return undefined;
+	} else if (input.includes("\n")) {
+		return input;
 	}
 
-	const file = Bun.file(input);
-	if (await file.exists()) {
-		try {
-			return await file.text();
-		} catch (error) {
+	try {
+		return await Bun.file(input).text();
+	} catch (error) {
+		if (!hasFsCode(error, "ENAMETOOLONG") && !isEnoent(error)) {
 			logger.warn(`Could not read ${description} file`, { path: input, error: String(error) });
-			return input;
 		}
+		return input;
 	}
-
-	return input;
 }
 
 export interface LoadContextFilesOptions {
-	/** Working directory to start walking up from. Default: process.cwd() */
+	/** Working directory to start walking up from. Default: getProjectDir() */
 	cwd?: string;
 }
 
@@ -361,7 +373,7 @@ export interface LoadContextFilesOptions {
 export async function loadProjectContextFiles(
 	options: LoadContextFilesOptions = {},
 ): Promise<Array<{ path: string; content: string; depth?: number }>> {
-	const resolvedCwd = options.cwd ?? process.cwd();
+	const resolvedCwd = options.cwd ?? getProjectDir();
 
 	const result = await loadCapability(contextFileCapability.id, { cwd: resolvedCwd });
 
@@ -391,7 +403,7 @@ export async function loadProjectContextFiles(
  * Returns combined content from all discovered SYSTEM.md files.
  */
 export async function loadSystemPromptFiles(options: LoadContextFilesOptions = {}): Promise<string | null> {
-	const resolvedCwd = options.cwd ?? process.cwd();
+	const resolvedCwd = options.cwd ?? getProjectDir();
 
 	const result = await loadCapability<SystemPromptFile>(systemPromptCapability.id, { cwd: resolvedCwd });
 
@@ -418,9 +430,11 @@ export interface BuildSystemPromptOptions {
 	toolNames?: string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
+	/** Repeat full tool descriptions in system prompt. Default: false */
+	repeatToolDescriptions?: boolean;
 	/** Skills settings for discovery. */
 	skillsSettings?: SkillsSettings;
-	/** Working directory. Default: process.cwd() */
+	/** Working directory. Default: getProjectDir() */
 	cwd?: string;
 	/** Pre-loaded context files (skips discovery if provided). */
 	contextFiles?: Array<{ path: string; content: string; depth?: number }>;
@@ -442,6 +456,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		customPrompt,
 		tools,
 		appendSystemPrompt,
+		repeatToolDescriptions = false,
 		skillsSettings,
 		toolNames,
 		cwd,
@@ -450,7 +465,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		preloadedSkills: providedPreloadedSkills,
 		rules,
 	} = options;
-	const resolvedCwd = cwd ?? process.cwd();
+	const resolvedCwd = cwd ?? getProjectDir();
 	const resolvedCustomPrompt = await resolvePromptInput(customPrompt, "system prompt");
 	const resolvedAppendPrompt = await resolvePromptInput(appendSystemPrompt, "append system prompt");
 
@@ -541,6 +556,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	return renderPromptTemplate(systemPromptTemplate, {
 		tools: toolNamesArray,
 		toolDescriptions,
+		repeatToolDescriptions,
 		environment,
 		systemPromptCustomization: systemPromptCustomization ?? "",
 		contextFiles,

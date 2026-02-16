@@ -499,6 +499,26 @@ pi.on("turn_end", async (event, ctx) => {
 
 **Examples:** [plan-mode.ts](../examples/extensions/plan-mode.ts)
 
+#### Runtime reliability events
+
+Fired for internal recovery/continuation mechanics:
+
+- `auto_compaction_start` / `auto_compaction_end`
+- `auto_retry_start` / `auto_retry_end`
+- `ttsr_triggered`
+- `todo_reminder`
+
+```typescript
+pi.on("todo_reminder", async (event, _ctx) => {
+	// event.todos, event.attempt, event.maxAttempts
+});
+
+pi.on("auto_retry_start", async (event, _ctx) => {
+	// event.attempt, event.maxAttempts, event.delayMs, event.errorMessage
+});
+```
+
+
 #### context
 
 Fired before each LLM call. Modify messages non-destructively.
@@ -866,6 +886,37 @@ pi.registerCommand("stats", {
 	},
 });
 ```
+### pi.registerProvider(name, config)
+
+Register or override providers/models at runtime:
+
+```typescript
+pi.registerProvider("my-provider", {
+	baseUrl: "https://api.example.com/v1",
+	apiKey: "MY_PROVIDER_API_KEY",
+	api: "openai-completions",
+	models: [
+		{
+			id: "my-model",
+			name: "My Model",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 8192,
+		},
+	],
+});
+```
+
+`registerProvider()` also supports:
+
+- `streamSimple` for custom API adapters
+- `headers` / `authHeader` for request customization
+- `oauth` for `/login <provider>` support with extension-defined login/refresh behavior
+
+Provider registrations are queued during extension load and applied when the session initializes.
+
 
 ### pi.registerMessageRenderer(customType, renderer)
 

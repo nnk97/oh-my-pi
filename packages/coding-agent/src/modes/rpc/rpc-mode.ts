@@ -449,6 +449,14 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				return success(id, "abort");
 			}
 
+			case "abort_and_prompt": {
+				await session.abort();
+				session
+					.prompt(command.message, { images: command.images })
+					.catch(e => output(error(id, "abort_and_prompt", e.message)));
+				return success(id, "abort_and_prompt");
+			}
+
 			case "new_session": {
 				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 				const cancelled = !(await session.newSession(options));
@@ -680,6 +688,6 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 		}
 	}
 
-	// Keep process alive forever
-	return new Promise(() => {});
+	// stdin closed — RPC client is gone, exit cleanly
+	process.exit(0);
 }

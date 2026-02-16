@@ -5,7 +5,7 @@
  *   import { settings } from "./settings";
  *
  *   const enabled = settings.get("compaction.enabled");  // sync read
- *   settings.set("theme", "dark");                       // sync write, saves in background
+ *   settings.set("theme.dark", "titanium");               // sync write, saves in background
  *
  * For tests:
  *   const isolated = Settings.isolated({ "compaction.enabled": false });
@@ -14,12 +14,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isEnoent, logger, procmgr } from "@oh-my-pi/pi-utils";
-import { getAgentDbPath, getAgentDir } from "@oh-my-pi/pi-utils/dirs";
+import { getAgentDbPath, getAgentDir, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { YAML } from "bun";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-registry";
 import { loadCapability } from "../discovery";
-import { setColorBlindMode, setSymbolPreset, setTheme } from "../modes/theme/theme";
+import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
 import { type EditMode, normalizeEditMode } from "../patch";
 import { AgentStorage } from "../session/agent-storage";
 import { withFileLock } from "./file-lock";
@@ -42,6 +42,7 @@ export type {
 	ExaSettings,
 	GroupPrefix,
 	GroupTypeMap,
+	MemoriesSettings,
 	RetrySettings,
 	SettingPath,
 	SettingValue,
@@ -82,7 +83,7 @@ export interface SettingsOptions {
 /**
  * Parse a dotted path into segments.
  * "compaction.enabled" → ["compaction", "enabled"]
- * "theme" → ["theme"]
+ * "theme.dark" → ["theme", "dark"]
  */
 function parsePath(path: string): string[] {
 	return path.split(".");
@@ -148,7 +149,7 @@ export class Settings {
 	#persist: boolean;
 
 	private constructor(options: SettingsOptions = {}) {
-		this.#cwd = path.normalize(options.cwd ?? process.cwd());
+		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
 		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
 		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, "config.yml");
 		this.#persist = !options.inMemory;
@@ -532,6 +533,19 @@ export class Settings {
 			}
 		}
 
+		// Migrate old flat "theme" string to nested theme.dark/theme.light
+		if (typeof raw.theme === "string") {
+			const oldTheme = raw.theme;
+			if (oldTheme === "light" || oldTheme === "dark") {
+				// Built-in defaults — just remove, let new defaults apply
+				delete raw.theme;
+			} else {
+				// Custom theme — detect luminance to place in correct slot
+				const slot = isLightTheme(oldTheme) ? "light" : "dark";
+				raw.theme = { [slot]: oldTheme };
+			}
+		}
+
 		return raw;
 	}
 
@@ -629,13 +643,14 @@ export class Settings {
 type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
 
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
-	theme: value => {
-		// Theme loading is async, but we call it synchronously here.
-		// The hook fires immediately, and the theme system handles async loading internally.
+	"theme.dark": value => {
 		if (typeof value === "string") {
-			setTheme(value, false).catch(err => {
-				logger.warn("Settings: theme hook failed", { theme: value, error: String(err) });
-			});
+			setAutoThemeMapping("dark", value);
+		}
+	},
+	"theme.light": value => {
+		if (typeof value === "string") {
+			setAutoThemeMapping("light", value);
 		}
 	},
 	symbolPreset: value => {

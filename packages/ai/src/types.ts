@@ -30,7 +30,7 @@ import type { AssistantMessageEventStream } from "./utils/event-stream";
 
 export type { AssistantMessageEventStream } from "./utils/event-stream";
 
-export type Api =
+export type KnownApi =
 	| "openai-completions"
 	| "openai-responses"
 	| "openai-codex-responses"
@@ -41,7 +41,7 @@ export type Api =
 	| "google-gemini-cli"
 	| "google-vertex"
 	| "cursor-agent";
-
+export type Api = KnownApi | (string & {});
 export interface ApiOptionsMap {
 	"anthropic-messages": AnthropicOptions;
 	"bedrock-converse-stream": BedrockOptions;
@@ -54,18 +54,17 @@ export interface ApiOptionsMap {
 	"google-vertex": GoogleVertexOptions;
 	"cursor-agent": CursorOptions;
 }
-
 // Compile-time exhaustiveness check - this will fail if ApiOptionsMap doesn't have all KnownApi keys
 type _CheckExhaustive =
-	ApiOptionsMap extends Record<Api, StreamOptions>
-		? Record<Api, StreamOptions> extends ApiOptionsMap
+	ApiOptionsMap extends Record<KnownApi, StreamOptions>
+		? Record<KnownApi, StreamOptions> extends ApiOptionsMap
 			? true
-			: ["ApiOptionsMap is missing some KnownApi values", Exclude<Api, keyof ApiOptionsMap>]
+			: ["ApiOptionsMap is missing some KnownApi values", Exclude<KnownApi, keyof ApiOptionsMap>]
 		: ["ApiOptionsMap doesn't extend Record<KnownApi, StreamOptions>"];
 const _exhaustive: _CheckExhaustive = true;
-
-// Helper type to get options for a specific API
-export type OptionsForApi<TApi extends Api> = ApiOptionsMap[TApi];
+export type OptionsForApi<TApi extends Api> =
+	| StreamOptions
+	| (TApi extends keyof ApiOptionsMap ? ApiOptionsMap[TApi] : never);
 
 export type KnownProvider =
 	| "amazon-bedrock"
@@ -113,6 +112,10 @@ export type ToolChoice =
 // Base options all providers share
 export type CacheRetention = "none" | "short" | "long";
 
+export interface ProviderSessionState {
+	close(): void;
+}
+
 export interface StreamOptions {
 	temperature?: number;
 	maxTokens?: number;
@@ -143,6 +146,11 @@ export interface StreamOptions {
 	 */
 	sessionId?: string;
 	/**
+	 * Provider-scoped mutable state store for this agent session.
+	 * Providers can use this to persist transport/session state between turns.
+	 */
+	providerSessionState?: Map<string, ProviderSessionState>;
+	/**
 	 * Optional hook to observe the provider request payload before it is sent.
 	 * The payload format is provider-specific.
 	 */
@@ -164,6 +172,8 @@ export interface SimpleStreamOptions extends StreamOptions {
 	toolChoice?: ToolChoice;
 	/** API format for Kimi Code provider: "openai" or "anthropic" (default: "anthropic") */
 	kimiApiFormat?: "openai" | "anthropic";
+	/** Hint that websocket transport should be preferred when supported by the provider implementation. */
+	preferWebsockets?: boolean;
 }
 
 // Generic StreamFunction with typed options
@@ -390,6 +400,8 @@ export interface Model<TApi extends Api = any> {
 	contextWindow: number;
 	maxTokens: number;
 	headers?: Record<string, string>;
+	/** Hint that websocket transport should be preferred when supported by the provider implementation. */
+	preferWebsockets?: boolean;
 	/** Compatibility overrides for openai-completions API. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions" ? OpenAICompat : never;
 }

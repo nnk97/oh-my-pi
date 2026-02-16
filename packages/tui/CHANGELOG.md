@@ -4,6 +4,12 @@
 
 ### Added
 - Added requestFullRender() to force a full repaint when external consumers override terminal dimensions
+
+## [12.5.0] - 2026-02-15
+### Added
+
+- Added `cursorOverride` and `cursorOverrideWidth` properties to customize the end-of-text cursor glyph with ANSI-styled strings
+- Added `getUseTerminalCursor()` method to query the terminal cursor mode setting
 ## [11.10.0] - 2026-02-10
 ### Added
 
