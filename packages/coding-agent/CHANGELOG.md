@@ -8,6 +8,7 @@
 - Added WebTerm settings tab with multi-select interface binding configuration for the web terminal
 - Added web terminal client debug reporting that captures viewport, sizing, and configuration metrics for troubleshooting
 - Added optional on-screen control bar for the web terminal with configurable keys and height
+- Added Ctrl+C to the web terminal control bar defaults and provided a mobile keyboard toggle button for touchscreen clients
 
 ### Changed
 - Web terminal now mirrors the interactive session terminal in-browser instead of spawning a separate PTY, forwarding input/output through a shared bridge

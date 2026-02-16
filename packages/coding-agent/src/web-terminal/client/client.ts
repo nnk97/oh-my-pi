@@ -10,7 +10,7 @@ const terminalRoot = (() => {
 	return element;
 })();
 
-type WebTerminalControlKey = "esc" | "enter" | "up" | "down" | "left" | "right";
+type WebTerminalControlKey = "esc" | "enter" | "up" | "down" | "left" | "right" | "ctrl+c";
 
 type WebTerminalRuntimeConfig = {
 	fontFamily?: string;
@@ -411,6 +411,7 @@ function setupControls(): void {
 		down: "↓",
 		left: "←",
 		right: "→",
+		"ctrl+c": "Ctrl+C",
 	};
 
 	const KEY_CODES: Record<string, string> = {
@@ -420,6 +421,7 @@ function setupControls(): void {
 		down: "\u001b[B",
 		right: "\u001b[C",
 		left: "\u001b[D",
+		"ctrl+c": "\u0003",
 	};
 
 	for (const key of keys) {
@@ -439,6 +441,26 @@ function setupControls(): void {
 
 		btn.addEventListener("mousedown", sendKey);
 		btn.addEventListener("touchstart", sendKey);
+
+		controlsBar.appendChild(btn);
+	}
+
+	// Add keyboard toggle for mobile devices
+	const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+	if (isMobile) {
+		const btn = document.createElement("div");
+		btn.className = "control-btn";
+		btn.textContent = "⌨";
+		btn.style.flex = "0 0 40px"; // Give it a fixed width so it doesn't take too much space
+
+		const focusTerm = (e: Event) => {
+			e.preventDefault();
+			e.stopPropagation();
+			term?.focus();
+		};
+
+		btn.addEventListener("mousedown", focusTerm);
+		btn.addEventListener("touchstart", focusTerm);
 
 		controlsBar.appendChild(btn);
 	}

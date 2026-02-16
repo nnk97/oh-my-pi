@@ -657,7 +657,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"webTerminal.extraControlKeys": {
 		type: "array",
-		default: ["esc", "enter", "up", "down", "left", "right"] as WebTerminalControlKey[],
+		default: ["esc", "enter", "up", "down", "left", "right", "ctrl+c"] as WebTerminalControlKey[],
 	},
 	"webTerminal.extraControlsHeightPx": {
 		type: "number",
@@ -1037,7 +1037,7 @@ export interface WebTerminalBinding {
 	ip: string;
 }
 
-export type WebTerminalControlKey = "esc" | "enter" | "up" | "down" | "left" | "right";
+export type WebTerminalControlKey = "esc" | "enter" | "up" | "down" | "left" | "right" | "ctrl+c";
 
 export interface WebTerminalSettings {
 	enabled: boolean;

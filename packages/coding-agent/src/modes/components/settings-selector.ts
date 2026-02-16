@@ -18,8 +18,8 @@ import type {
 	StatusLinePreset,
 	StatusLineSegmentId,
 	StatusLineSeparatorStyle,
-	WebTerminalControlKey,
 	WebTerminalBinding,
+	WebTerminalControlKey,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
@@ -596,7 +596,7 @@ export class SettingsSelectorComponent extends Container {
 	}
 
 	#createWebTerminalKeysItem(): SettingItem {
-		const allKeys: WebTerminalControlKey[] = ["esc", "enter", "up", "down", "left", "right"];
+		const allKeys: WebTerminalControlKey[] = ["esc", "enter", "up", "down", "left", "right", "ctrl+c"];
 		const currentKeys = settings.get("webTerminal.extraControlKeys") || [];
 		const summary = this.#formatControlKeysSummary(currentKeys, allKeys.length);
 		const keyLabels: Record<WebTerminalControlKey, string> = {
@@ -606,6 +606,7 @@ export class SettingsSelectorComponent extends Container {
 			down: "↓",
 			left: "←",
 			right: "→",
+			"ctrl+c": "Ctrl+C",
 		};
 		const keyOptions = allKeys.map(key => ({
 			id: key,
@@ -643,9 +644,7 @@ export class SettingsSelectorComponent extends Container {
 		return `${keys.length} selected`;
 	}
 
-	#getBindingOptionEntries(
-		options: WebTerminalBindingOption[],
-	): MultiSelectOption<WebTerminalBindingOption>[] {
+	#getBindingOptionEntries(options: WebTerminalBindingOption[]): MultiSelectOption<WebTerminalBindingOption>[] {
 		const ipWidth = this.#getBindingIpWidth(options);
 		return options.map(option => ({
 			id: option.id,
@@ -669,11 +668,7 @@ export class SettingsSelectorComponent extends Container {
 				.replace(/pseudo-?interface/gi, "")
 				.trim();
 			const suffix =
-				cleaned.length > 0
-					? cleaned
-					: option.interface.toLowerCase().includes("loopback")
-						? ""
-						: option.interface;
+				cleaned.length > 0 ? cleaned : option.interface.toLowerCase().includes("loopback") ? "" : option.interface;
 			const ipDisplay = suffix ? `${suffix}/${option.ip}` : option.ip;
 			return { interfaceLabel: "Loopback", ipDisplay };
 		}
