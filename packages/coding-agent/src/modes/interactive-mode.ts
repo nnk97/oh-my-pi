@@ -24,8 +24,8 @@ import type { SessionContext, SessionManager } from "../session/session-manager"
 import { getRecentSessions } from "../session/session-manager";
 import type { ExitPlanModeDetails } from "../tools";
 import { setTerminalTitle } from "../utils/title-generator";
-import { createWebTerminalBridge, MirroredTerminal, setActiveWebTerminalBridge } from "../web-terminal/terminal-bridge";
 import { setWebTerminalServerCallbacks } from "../web-terminal/server";
+import { createWebTerminalBridge, MirroredTerminal, setActiveWebTerminalBridge } from "../web-terminal/terminal-bridge";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { CustomEditor } from "./components/custom-editor";
@@ -326,16 +326,18 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		setWebTerminalServerCallbacks({
 			onClientConnected: info => {
-				const remote = info.remoteAddress && info.remotePort !== undefined
-					? `${info.remoteAddress}:${info.remotePort}`
-					: "unknown";
+				const remote =
+					info.remoteAddress && info.remotePort !== undefined
+						? `${info.remoteAddress}:${info.remotePort}`
+						: "unknown";
 				const local = `${info.localAddress}:${info.localPort}`;
 				this.showStatus(`Web terminal client connected from ${remote} to ${local}`);
 			},
 			onClientDisconnected: info => {
-				const remote = info.remoteAddress && info.remotePort !== undefined
-					? `${info.remoteAddress}:${info.remotePort}`
-					: "unknown";
+				const remote =
+					info.remoteAddress && info.remotePort !== undefined
+						? `${info.remoteAddress}:${info.remotePort}`
+						: "unknown";
 				const local = `${info.localAddress}:${info.localPort}`;
 				this.showStatus(`Web terminal client disconnected from ${remote} to ${local}`);
 			},

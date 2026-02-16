@@ -549,7 +549,10 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 			} else {
 				const webTerminal = await getOrStartWebTerminalServer({ cwd });
 				const urls = webTerminal.urls;
-				const message = urls.length > 1 ? `Web terminal running at:\n${urls.map(url => `  ${url}`).join("\n")}` : `Web terminal running at ${webTerminal.url}`;
+				const message =
+					urls.length > 1
+						? `Web terminal running at:\n${urls.map(url => `  ${url}`).join("\n")}`
+						: `Web terminal running at ${webTerminal.url}`;
 				notifs.push({ kind: "info", message });
 			}
 		} else {

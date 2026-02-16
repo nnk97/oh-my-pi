@@ -279,8 +279,8 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"thinking.high": "◕ high",
 	"thinking.xhigh": "◉ xhi",
 	// Checkboxes
-	"checkbox.checked": "☑",
-	"checkbox.unchecked": "☐",
+	"checkbox.checked": "▣",
+	"checkbox.unchecked": "□",
 	// Formatting
 	"format.bullet": "•",
 	"format.dash": "—",

@@ -18,19 +18,20 @@ import type {
 	StatusLinePreset,
 	StatusLineSegmentId,
 	StatusLineSeparatorStyle,
+	WebTerminalControlKey,
 	WebTerminalBinding,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
-import { DynamicBorder } from "./dynamic-border";
-import { PluginSettingsComponent } from "./plugin-settings";
-import { getSettingsForTab, type SettingDef } from "./settings-defs";
-import { getPreset } from "./status-line/presets";
 import {
 	getWebTerminalBindingOptions,
 	reconcileWebTerminalBindings,
 	type WebTerminalBindingOption,
 } from "../../web-terminal/interfaces";
+import { DynamicBorder } from "./dynamic-border";
+import { PluginSettingsComponent } from "./plugin-settings";
+import { getSettingsForTab, type SettingDef } from "./settings-defs";
+import { getPreset } from "./status-line/presets";
 
 function getTabBarTheme(): TabBarTheme {
 	return {
@@ -121,23 +122,24 @@ class SelectSubmenu extends Container {
 	}
 }
 
-type MultiSelectSaveHandler = (selected: WebTerminalBindingOption[]) => void;
+type MultiSelectOption<T> = { id: string; label: string; value: T };
+type MultiSelectSaveHandler<T> = (selected: MultiSelectOption<T>[]) => void;
 
-class MultiSelectSubmenu extends Container {
+class MultiSelectSubmenu<T> extends Container {
 	#selectList: SelectList;
 	#summaryText: Text | null = null;
 	#selectedIds: Set<string>;
 	#items: SelectItem[];
-	#options: WebTerminalBindingOption[];
-	#optionMap: Map<string, WebTerminalBindingOption>;
-	#ipWidth: number;
+	#options: MultiSelectOption<T>[];
+	#optionMap: Map<string, MultiSelectOption<T>>;
+	#onSave: MultiSelectSaveHandler<T>;
 
 	constructor(
 		title: string,
 		description: string,
-		options: WebTerminalBindingOption[],
+		options: MultiSelectOption<T>[],
 		selectedIds: Set<string>,
-		onSave: MultiSelectSaveHandler,
+		onSave: MultiSelectSaveHandler<T>,
 		onCancel: () => void,
 		warning?: string,
 	) {
@@ -145,11 +147,11 @@ class MultiSelectSubmenu extends Container {
 		this.#options = options;
 		this.#selectedIds = new Set(selectedIds);
 		this.#optionMap = new Map(options.map(option => [option.id, option]));
-		this.#ipWidth = this.#getMaxIpWidth(options);
 		this.#items = options.map(option => ({
 			value: option.id,
 			label: this.#formatLabel(option),
 		}));
+		this.#onSave = onSave;
 
 		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
 		if (description) {
@@ -175,83 +177,12 @@ class MultiSelectSubmenu extends Container {
 
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("dim", "  Space/Enter to toggle · S to save · Esc to cancel"), 0, 0));
-		this.#onSave = onSave;
 	}
 
-	#onSave: MultiSelectSaveHandler;
-
-	#formatLabel(option: WebTerminalBindingOption): string {
+	#formatLabel(option: MultiSelectOption<T>): string {
 		const checked = this.#selectedIds.has(option.id);
 		const box = checked ? theme.checkbox.checked : theme.checkbox.unchecked;
-		const { interfaceLabel, ipDisplay } = this.#getInterfaceDisplay(option);
-		const paddedIp = ipDisplay.padEnd(this.#ipWidth, " ");
-		const { label, isPublic } = this.#classifyBinding(option);
-		const status = isPublic ? `${label} ${theme.fg("error", "(!)")}` : label;
-		return `${box} ${interfaceLabel} - ${paddedIp} - ${status}`;
-	}
-
-	#getInterfaceDisplay(
-		option: WebTerminalBindingOption,
-	): { interfaceLabel: string; ipDisplay: string } {
-		if (this.#isLocalhostIp(option.ip) || option.isLoopback) {
-			const cleaned = option.interface
-				.replace(/loopback/gi, "")
-				.replace(/pseudo-?interface/gi, "")
-				.trim();
-			const suffix = cleaned.length > 0
-				? cleaned
-				: option.interface.toLowerCase().includes("loopback")
-					? ""
-					: option.interface;
-			const ipDisplay = suffix ? `${suffix}/${option.ip}` : option.ip;
-			return { interfaceLabel: "Loopback", ipDisplay };
-		}
-		return { interfaceLabel: option.interface, ipDisplay: option.ip };
-	}
-
-	#getMaxIpWidth(options: WebTerminalBindingOption[]): number {
-		let maxWidth = 0;
-		for (const option of options) {
-			const { ipDisplay } = this.#getInterfaceDisplay(option);
-			maxWidth = Math.max(maxWidth, ipDisplay.length);
-		}
-		return maxWidth;
-	}
-
-	#classifyBinding(option: WebTerminalBindingOption): { label: string; isPublic: boolean } {
-		if (this.#isLocalhostIp(option.ip) || option.isLoopback) {
-			return { label: "Localhost", isPublic: false };
-		}
-		if (this.#isPrivateIp(option.ip)) {
-			return { label: "Private", isPublic: false };
-		}
-		return { label: "Public", isPublic: true };
-	}
-
-	#isLocalhostIp(ip: string): boolean {
-		return ip === "0.0.0.0" || ip.startsWith("127.");
-	}
-
-	#isPrivateIp(ip: string): boolean {
-		const parts = this.#parseIpv4(ip);
-		if (!parts) return false;
-		const [first, second] = parts;
-		if (first === 10) return true;
-		if (first === 172 && second >= 16 && second <= 31) return true;
-		if (first === 192 && second === 168) return true;
-		if (first === 169 && second === 254) return true;
-		if (first === 100 && second >= 64 && second <= 127) return true;
-		return false;
-	}
-
-	#parseIpv4(ip: string): [number, number, number, number] | null {
-		const parts = ip.split(".");
-		if (parts.length !== 4) return null;
-		const numbers = parts.map(part => Number(part));
-		if (numbers.some(value => !Number.isInteger(value) || value < 0 || value > 255)) {
-			return null;
-		}
-		return [numbers[0]!, numbers[1]!, numbers[2]!, numbers[3]!];
+		return `${box} ${option.label}`;
 	}
 
 	#getSummaryText(): string {
@@ -260,7 +191,7 @@ class MultiSelectSubmenu extends Container {
 		return theme.fg("muted", `Selected: ${text}`);
 	}
 
-	#getSelectedOptions(): WebTerminalBindingOption[] {
+	#getSelectedOptions(): MultiSelectOption<T>[] {
 		return this.#options.filter(option => this.#selectedIds.has(option.id));
 	}
 
@@ -279,7 +210,7 @@ class MultiSelectSubmenu extends Container {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, "ctrl+s") || matchesKey(data, "meta+s") || data.toLowerCase() === "s") {
+		if (matchesKey(data, "ctrl+s") || data.toLowerCase() === "s") {
 			this.#onSave(this.#getSelectedOptions());
 			return;
 		}
@@ -579,6 +510,7 @@ export class SettingsSelectorComponent extends Container {
 		}
 
 		if (tabId === "webterm") {
+			items.push(this.#createWebTerminalKeysItem());
 			items.push(this.#createWebTerminalBindingsItem());
 		}
 
@@ -628,6 +560,7 @@ export class SettingsSelectorComponent extends Container {
 		const bindings = settings.get("webTerminal.bindings");
 		const { active, missing } = reconcileWebTerminalBindings(bindings, options);
 		const summary = this.#formatWebTerminalSummary(active, missing);
+		const displayOptions = this.#getBindingOptionEntries(options);
 
 		return {
 			id: "webTerminal.bindings",
@@ -643,17 +576,17 @@ export class SettingsSelectorComponent extends Container {
 				return new MultiSelectSubmenu(
 					"Bind interfaces",
 					"Choose which interfaces should accept web terminal connections.",
-					options,
+					displayOptions,
 					selectedIds,
 					selected => {
 						const nextBindings = selected.map(option => ({
-							interface: option.interface,
-							ip: option.ip,
+							interface: option.value.interface,
+							ip: option.value.ip,
 						}));
 						settings.set("webTerminal.bindings", nextBindings);
 						this.callbacks.onChange("webTerminal.bindings", nextBindings);
-					const updated = reconcileWebTerminalBindings(nextBindings, options);
-					done(this.#formatWebTerminalSummary(updated.active, updated.missing));
+						const updated = reconcileWebTerminalBindings(nextBindings, options);
+						done(this.#formatWebTerminalSummary(updated.active, updated.missing));
 					},
 					() => done(),
 					warning,
@@ -662,10 +595,137 @@ export class SettingsSelectorComponent extends Container {
 		};
 	}
 
-	#formatWebTerminalSummary(
-		active: WebTerminalBindingOption[],
-		missing: WebTerminalBinding[],
-	): string {
+	#createWebTerminalKeysItem(): SettingItem {
+		const allKeys: WebTerminalControlKey[] = ["esc", "enter", "up", "down", "left", "right"];
+		const currentKeys = settings.get("webTerminal.extraControlKeys") || [];
+		const summary = this.#formatControlKeysSummary(currentKeys, allKeys.length);
+		const keyLabels: Record<WebTerminalControlKey, string> = {
+			esc: "ESC",
+			enter: "⏎",
+			up: "↑",
+			down: "↓",
+			left: "←",
+			right: "→",
+		};
+		const keyOptions = allKeys.map(key => ({
+			id: key,
+			label: keyLabels[key] ?? key.toUpperCase(),
+			value: key,
+		}));
+
+		return {
+			id: "webTerminal.extraControlKeys",
+			label: "Visible extra keys",
+			description: "Select keys to show in the extra controls bar",
+			currentValue: summary,
+			submenu: (_currentValue, done) => {
+				const selectedIds = new Set(settings.get("webTerminal.extraControlKeys") || []);
+				return new MultiSelectSubmenu(
+					"Visible extra keys",
+					"Select keys to show in the bottom control bar.",
+					keyOptions,
+					selectedIds,
+					selected => {
+						const newKeys = selected.map(option => option.value);
+						settings.set("webTerminal.extraControlKeys", newKeys);
+						this.callbacks.onChange("webTerminal.extraControlKeys", newKeys);
+						done(this.#formatControlKeysSummary(newKeys, allKeys.length));
+					},
+					() => done(),
+				);
+			},
+		};
+	}
+
+	#formatControlKeysSummary(keys: WebTerminalControlKey[], total: number): string {
+		if (keys.length === 0) return "No keys";
+		if (keys.length === total) return "All keys";
+		return `${keys.length} selected`;
+	}
+
+	#getBindingOptionEntries(
+		options: WebTerminalBindingOption[],
+	): MultiSelectOption<WebTerminalBindingOption>[] {
+		const ipWidth = this.#getBindingIpWidth(options);
+		return options.map(option => ({
+			id: option.id,
+			label: this.#formatBindingLabel(option, ipWidth),
+			value: option,
+		}));
+	}
+
+	#formatBindingLabel(option: WebTerminalBindingOption, ipWidth: number): string {
+		const { interfaceLabel, ipDisplay } = this.#getBindingInterfaceDisplay(option);
+		const paddedIp = ipDisplay.padEnd(ipWidth, " ");
+		const { label, isPublic } = this.#classifyBinding(option);
+		const status = isPublic ? `${label} ${theme.fg("error", "(!)")}` : label;
+		return `${interfaceLabel} - ${paddedIp} - ${status}`;
+	}
+
+	#getBindingInterfaceDisplay(option: WebTerminalBindingOption): { interfaceLabel: string; ipDisplay: string } {
+		if (this.#isLocalhostIp(option.ip) || option.isLoopback) {
+			const cleaned = option.interface
+				.replace(/loopback/gi, "")
+				.replace(/pseudo-?interface/gi, "")
+				.trim();
+			const suffix =
+				cleaned.length > 0
+					? cleaned
+					: option.interface.toLowerCase().includes("loopback")
+						? ""
+						: option.interface;
+			const ipDisplay = suffix ? `${suffix}/${option.ip}` : option.ip;
+			return { interfaceLabel: "Loopback", ipDisplay };
+		}
+		return { interfaceLabel: option.interface, ipDisplay: option.ip };
+	}
+
+	#getBindingIpWidth(options: WebTerminalBindingOption[]): number {
+		let maxWidth = 0;
+		for (const option of options) {
+			const { ipDisplay } = this.#getBindingInterfaceDisplay(option);
+			maxWidth = Math.max(maxWidth, ipDisplay.length);
+		}
+		return maxWidth;
+	}
+
+	#classifyBinding(option: WebTerminalBindingOption): { label: string; isPublic: boolean } {
+		if (this.#isLocalhostIp(option.ip) || option.isLoopback) {
+			return { label: "Localhost", isPublic: false };
+		}
+		if (this.#isPrivateIp(option.ip)) {
+			return { label: "Private", isPublic: false };
+		}
+		return { label: "Public", isPublic: true };
+	}
+
+	#isLocalhostIp(ip: string): boolean {
+		return ip === "0.0.0.0" || ip.startsWith("127.");
+	}
+
+	#isPrivateIp(ip: string): boolean {
+		const parts = this.#parseIpv4(ip);
+		if (!parts) return false;
+		const [first, second] = parts;
+		if (first === 10) return true;
+		if (first === 172 && second >= 16 && second <= 31) return true;
+		if (first === 192 && second === 168) return true;
+		if (first === 169 && second === 254) return true;
+		if (first === 100 && second >= 64 && second <= 127) return true;
+		return false;
+	}
+
+	#parseIpv4(ip: string): [number, number, number, number] | null {
+		const parts = ip.split(".");
+		if (parts.length !== 4) return null;
+		const numbers = parts.map(part => Number(part));
+		if (numbers.some(value => !Number.isInteger(value) || value < 0 || value > 255)) {
+			return null;
+		}
+		return [numbers[0]!, numbers[1]!, numbers[2]!, numbers[3]!];
+	}
+
+	#formatWebTerminalSummary(active: WebTerminalBindingOption[], missing: WebTerminalBinding[]): string {
 		if (active.length === 0) {
 			return "No interfaces";
 		}

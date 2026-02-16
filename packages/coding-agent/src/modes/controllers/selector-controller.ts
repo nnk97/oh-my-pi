@@ -28,11 +28,8 @@ import {
 import type { InteractiveModeContext } from "../../modes/types";
 import { SessionManager } from "../../session/session-manager";
 import { setPreferredImageProvider, setPreferredSearchProvider } from "../../tools";
-import {
-	getWebTerminalServer,
-	stopWebTerminalServer,
-} from "../../web-terminal/server";
 import { getWebTerminalBindingOptions, reconcileWebTerminalBindings } from "../../web-terminal/interfaces";
+import { getWebTerminalServer, stopWebTerminalServer } from "../../web-terminal/server";
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -245,10 +242,7 @@ export class SelectorController {
 				const server = getWebTerminalServer();
 				if (!server) break;
 				const bindingOptions = getWebTerminalBindingOptions();
-				const { active } = reconcileWebTerminalBindings(
-					settings.get("webTerminal.bindings"),
-					bindingOptions,
-				);
+				const { active } = reconcileWebTerminalBindings(settings.get("webTerminal.bindings"), bindingOptions);
 				if (active.length === 0) {
 					stopWebTerminalServer("Web terminal bindings unavailable");
 					break;
@@ -264,10 +258,7 @@ export class SelectorController {
 					break;
 				}
 				const bindingOptions = getWebTerminalBindingOptions();
-				const { active } = reconcileWebTerminalBindings(
-					settings.get("webTerminal.bindings"),
-					bindingOptions,
-				);
+				const { active } = reconcileWebTerminalBindings(settings.get("webTerminal.bindings"), bindingOptions);
 				if (active.length === 0) {
 					stopWebTerminalServer("Web terminal bindings unavailable");
 					break;

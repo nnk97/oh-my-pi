@@ -23,11 +23,7 @@ import { resolveToCwd } from "../../tools/path-utils";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog";
 import { openPath } from "../../utils/open";
 import { renderQrCode } from "../../web-terminal/qr";
-import {
-	getOrStartWebTerminalServer,
-	getWebTerminalServer,
-	stopWebTerminalServer,
-} from "../../web-terminal/server";
+import { getOrStartWebTerminalServer, getWebTerminalServer, stopWebTerminalServer } from "../../web-terminal/server";
 
 export class CommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}

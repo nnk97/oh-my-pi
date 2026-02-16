@@ -646,6 +646,29 @@ export const SETTINGS_SCHEMA = {
 		type: "array",
 		default: [] as WebTerminalBinding[],
 	},
+	"webTerminal.showExtraControls": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "webterm",
+			label: "Show extra controls",
+			description: "Show mobile-friendly control bar",
+		},
+	},
+	"webTerminal.extraControlKeys": {
+		type: "array",
+		default: ["esc", "enter", "up", "down", "left", "right"] as WebTerminalControlKey[],
+	},
+	"webTerminal.extraControlsHeightPx": {
+		type: "number",
+		default: 48,
+		ui: {
+			tab: "webterm",
+			label: "Control bar height",
+			description: "Height of the extra controls bar in pixels",
+			submenu: true,
+		},
+	},
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Bash interceptor settings
@@ -1014,9 +1037,14 @@ export interface WebTerminalBinding {
 	ip: string;
 }
 
+export type WebTerminalControlKey = "esc" | "enter" | "up" | "down" | "left" | "right";
+
 export interface WebTerminalSettings {
 	enabled: boolean;
 	bindings: WebTerminalBinding[];
+	showExtraControls: boolean;
+	extraControlKeys: WebTerminalControlKey[];
+	extraControlsHeightPx: number;
 }
 
 export interface StatusLineSettings {

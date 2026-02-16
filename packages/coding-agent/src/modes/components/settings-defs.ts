@@ -139,6 +139,14 @@ const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 		{ value: "20", label: "20 messages" },
 		{ value: "30", label: "30 messages" },
 	],
+	// Web terminal extra controls height
+	"webTerminal.extraControlsHeightPx": [
+		{ value: "32", label: "32px", description: "Compact" },
+		{ value: "40", label: "40px", description: "Standard" },
+		{ value: "48", label: "48px", description: "Large (Default)" },
+		{ value: "56", label: "56px", description: "X-Large" },
+		{ value: "64", label: "64px", description: "XX-Large" },
+	],
 	// Virtual terminal
 	"bash.virtualTerminal": [
 		{ value: "on", label: "On", description: "PTY-backed interactive execution" },

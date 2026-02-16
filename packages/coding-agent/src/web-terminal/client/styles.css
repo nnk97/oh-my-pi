@@ -22,40 +22,72 @@ body {
 	flex-direction: column;
 }
 
-#terminal {
+#terminal-host {
 	width: 100%;
 	height: 100%;
 	padding: 0;
 	display: flex;
 	flex-direction: column;
-}
-
-#terminal,
-#terminal .xterm,
-#terminal .xterm-viewport {
-	height: 100%;
-	width: 100%;
-}
-
-#terminal .xterm-screen {
-	width: 100%;
-}
-
-#terminal .xterm {
 	flex: 1;
 	min-height: 0;
 }
 
-#terminal .xterm-viewport,
-#terminal .xterm-scrollable-element {
+#terminal-host,
+#terminal-host .xterm,
+#terminal-host .xterm-viewport {
+	height: 100%;
+	width: 100%;
+}
+
+#terminal-host .xterm-screen {
+	width: 100%;
+}
+
+#terminal-host .xterm {
+	flex: 1;
+	min-height: 0;
+}
+
+#terminal-host .xterm-viewport,
+#terminal-host .xterm-scrollable-element {
 	height: 100% !important;
 }
 
-#terminal .xterm-rows {
+#terminal-host .xterm-rows {
 	width: 100% !important;
 }
 
+#controls-bar {
+	display: none;
+	width: 100%;
+	flex-direction: row;
+	background: #1a1b1e;
+	border-top: 1px solid #333;
+	padding: 4px;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+}
 
+.control-btn {
+	background: #2a2b2e;
+	color: #eee;
+	border: 1px solid #444;
+	border-radius: 4px;
+	font-family: monospace;
+	font-size: 14px;
+	cursor: pointer;
+	user-select: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 1;
+	height: 100%;
+}
+
+.control-btn:active {
+	background: #3a3b3e;
+}
 
 .xterm {
 	font-size: 14px;

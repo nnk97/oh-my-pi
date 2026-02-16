@@ -3,9 +3,7 @@ import * as url from "node:url";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Server, ServerWebSocket } from "bun";
 import { settings } from "../config/settings";
-import type { ClientCapabilities, ClientDebugInfo, ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
-import { parseClientMessage, serializeServerMessage } from "./protocol";
-import { getActiveWebTerminalBridge, type WebTerminalBridge } from "./terminal-bridge";
+import type { WebTerminalControlKey } from "../config/settings-schema";
 import {
 	getWebTerminalBindingOptions,
 	reconcileWebTerminalBindings,
@@ -13,6 +11,9 @@ import {
 	type WebTerminalBindingError,
 	type WebTerminalBindingOption,
 } from "./interfaces";
+import type { ClientCapabilities, ClientDebugInfo, ClientMessage, ServerMessage, ServerStatusState } from "./protocol";
+import { parseClientMessage, serializeServerMessage } from "./protocol";
+import { getActiveWebTerminalBridge, type WebTerminalBridge } from "./terminal-bridge";
 
 export type WebTerminalClientInfo = {
 	binding: WebTerminalBindingOption;
@@ -60,6 +61,9 @@ type WebTerminalAsset = {
 type WebTerminalClientConfig = {
 	fontFamily?: string;
 	fontSize?: number;
+	showExtraControls?: boolean;
+	extraControlKeys?: WebTerminalControlKey[];
+	extraControlsHeightPx?: number;
 };
 
 function isSameCapabilities(left: ClientCapabilities | null, right: ClientCapabilities): boolean {
@@ -261,11 +265,7 @@ export class WebTerminalServer {
 		this.#activeSocket = ws;
 	}
 
-	#handleFetch(
-		req: Request,
-		server: Server<WebTerminalSocketData>,
-		bindingId: string,
-	): Response | undefined {
+	#handleFetch(req: Request, server: Server<WebTerminalSocketData>, bindingId: string): Response | undefined {
 		const requestUrl = new URL(req.url);
 		if (requestUrl.pathname === "/favicon.ico") {
 			return new Response(null, { status: 204 });
@@ -298,7 +298,15 @@ export class WebTerminalServer {
 		if (!asset) {
 			return new Response("Not found", { status: 404 });
 		}
-		return new Response(asset.content, {
+
+		let content = asset.content;
+		if (asset.contentType === "text/html") {
+			const config = getWebTerminalClientConfig();
+			const configScript = `<script>window.__OMP_WEB_TERMINAL_CONFIG=${JSON.stringify(config).replace(/</g, "\\u003c")};</script>`;
+			content = content.replace(/<script>window\.__OMP_WEB_TERMINAL_CONFIG=.*?;<\/script>/, configScript);
+		}
+
+		return new Response(content, {
 			headers: {
 				"Content-Type": asset.contentType,
 				"Cache-Control": "no-store",
@@ -418,9 +426,6 @@ export class WebTerminalServer {
 			} catch (error) {
 				this.#sendStatus(ws, "error", error instanceof Error ? error.message : String(error));
 			}
-			return;
-		}
-		if (message.type === "client_capabilities") {
 			return;
 		}
 	}
@@ -635,6 +640,11 @@ function getWebTerminalClientConfig(): WebTerminalClientConfig {
 			config.fontSize = Math.max(8, Math.min(24, Math.round(parsed)));
 		}
 	}
+
+	config.showExtraControls = settings.get("webTerminal.showExtraControls");
+	config.extraControlKeys = settings.get("webTerminal.extraControlKeys");
+	config.extraControlsHeightPx = settings.get("webTerminal.extraControlsHeightPx");
+
 	return config;
 }
 

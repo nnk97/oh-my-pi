@@ -3,16 +3,21 @@ import { Terminal } from "@xterm/xterm";
 import type { ClientDebugInfo } from "../protocol";
 
 const terminalRoot = (() => {
-	const element = document.getElementById("terminal");
+	const element = document.getElementById("terminal-host");
 	if (!(element instanceof HTMLElement)) {
-		throw new Error("Terminal container not found");
+		throw new Error("Terminal host container not found");
 	}
 	return element;
 })();
 
+type WebTerminalControlKey = "esc" | "enter" | "up" | "down" | "left" | "right";
+
 type WebTerminalRuntimeConfig = {
 	fontFamily?: string;
 	fontSize?: number;
+	showExtraControls?: boolean;
+	extraControlKeys?: WebTerminalControlKey[];
+	extraControlsHeightPx?: number;
 };
 
 type ClientCapabilities = {
@@ -73,10 +78,8 @@ function applyViewportSize(): void {
 	const widthPx = `${Math.max(0, Math.floor(width))}px`;
 	document.documentElement.style.height = heightPx;
 	document.body.style.height = heightPx;
-	terminalRoot.style.height = heightPx;
 	document.documentElement.style.width = widthPx;
 	document.body.style.width = widthPx;
-	terminalRoot.style.width = widthPx;
 }
 
 function sendMessage(payload: object): void {
@@ -199,12 +202,12 @@ function collectDebugInfo(): ClientDebugInfo {
 			documentHeight: document.documentElement.clientHeight,
 			visualViewport: viewport
 				? {
-					width: viewport.width,
-					height: viewport.height,
-					scale: viewport.scale,
-					offsetLeft: viewport.offsetLeft,
-					offsetTop: viewport.offsetTop,
-				}
+						width: viewport.width,
+						height: viewport.height,
+						scale: viewport.scale,
+						offsetLeft: viewport.offsetLeft,
+						offsetTop: viewport.offsetTop,
+					}
 				: null,
 		},
 		terminal: {
@@ -372,18 +375,73 @@ function initTerminal(): void {
 	});
 }
 
-(window as typeof window & { webTerminalDebug?: () => void; debugWebTerminal?: () => ClientDebugInfo }).webTerminalDebug =
-	() => {
-		debugWebTerminal("manual");
-	};
-(window as typeof window & { webTerminalDebug?: () => void; debugWebTerminal?: () => ClientDebugInfo }).debugWebTerminal =
-	() => debugWebTerminal("manual");
+(
+	window as typeof window & { webTerminalDebug?: () => void; debugWebTerminal?: () => ClientDebugInfo }
+).webTerminalDebug = () => {
+	debugWebTerminal("manual");
+};
+(
+	window as typeof window & { webTerminalDebug?: () => void; debugWebTerminal?: () => ClientDebugInfo }
+).debugWebTerminal = () => debugWebTerminal("manual");
 
 function boot(): void {
 	applyViewportSize();
+	setupControls();
 	initTerminal();
 	attachResizeHooks();
 	startWebSocket();
+}
+
+function setupControls(): void {
+	if (!runtimeConfig?.showExtraControls) return;
+
+	const controlsBar = document.getElementById("controls-bar");
+	if (!controlsBar) return;
+
+	const height = runtimeConfig.extraControlsHeightPx ?? 48;
+	controlsBar.style.height = `${height}px`;
+	controlsBar.style.display = "flex";
+
+	const keys = runtimeConfig.extraControlKeys ?? ["esc", "enter", "up", "down", "left", "right"];
+
+	const KEY_LABELS: Record<string, string> = {
+		esc: "ESC",
+		enter: "⏎",
+		up: "↑",
+		down: "↓",
+		left: "←",
+		right: "→",
+	};
+
+	const KEY_CODES: Record<string, string> = {
+		esc: "\u001b",
+		enter: "\r",
+		up: "\u001b[A",
+		down: "\u001b[B",
+		right: "\u001b[C",
+		left: "\u001b[D",
+	};
+
+	for (const key of keys) {
+		const btn = document.createElement("div");
+		btn.className = "control-btn";
+		btn.textContent = KEY_LABELS[key] ?? key.toUpperCase();
+
+		const sendKey = (e: Event) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const code = KEY_CODES[key];
+			if (code) {
+				sendMessage({ type: "input", data: code });
+				term?.focus();
+			}
+		};
+
+		btn.addEventListener("mousedown", sendKey);
+		btn.addEventListener("touchstart", sendKey);
+
+		controlsBar.appendChild(btn);
+	}
 }
 
 if (document.readyState === "complete") {
