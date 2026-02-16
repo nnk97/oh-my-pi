@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Added Z.AI web search provider support via remote MCP endpoint (webSearchPrime)
+- Added `zai` as a selectable web search provider option in settings
+- Added Z.AI to automatic provider fallback chain for web search
 
 ### Added
 - Added local web terminal server with xterm.js client, CLI flag, and /web_terminal slash command with QR code display
